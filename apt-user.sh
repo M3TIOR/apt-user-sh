@@ -1,5 +1,6 @@
 #!/bin/sh -e
 # NOTE: Needs `chmod u+x` to function properly.
+# NOTE; This script is not intended to be sourced.
 # Copyright 2020 Ruby Allison Rose (aka. M3TIOR)
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -19,29 +20,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
-
-# NOTE; This script is not intended to be sourced.
-
-# NOTE: prototype apt-user
-#       * `apt-get download` can be called without root to fetch remotes.
-#       * `dpkg-deb` can be called without root for unpacking and geting depends.
-#       * `apt-cache` can be called without root to query installed packages.
-#       * fakechroot can be bundled.
-#       * `apt-ftparchive` may be run as root to generate a localhost user repo.
-#
-# There's no way to know what packages need root privilages to run, so it will
-# be up to the users to manage that.
-#
-# I'd like to add apt-update like features to this so even users who have
-# limited system access can get the latest packages when they want.
-
-#apt-cache depends $packages --recurse --important; # use to search and sort.
-#apt-cache depends $packages --recurse --important --installed # negate.
-
-# May be able to track installed packages or libraries.
-#dpkg --root=$HOME/.local/ -i
-#
-#https://github.com/Gregwar/notroot/blob/master/bashrc#L1
 
 ################################################################################
 ## POLYFILLS
@@ -93,6 +71,7 @@ else
 		printf '%s' "$*"; if test "$DISABLE_NEWLINE" -eq "0"; then printf '\n'; fi;
 	}
 fi;
+
 ################################################################################
 ## UNIVERSALS
 
@@ -169,98 +148,36 @@ glob_match() {
 	return $RETURN;
 }
 
+query_yn() {
+	while read -p 'y/N: ' YN; do
+		case "$YN" in
+			[yY]*) return 0;;
+			[nN]*) return 1;;
+			*) echo "Improper response, please type 'yes', or 'no'.";;
+		esac;
+	done;
+}
+
 nop(){ return 0; }
 
 ################################################################################
+## FUNCTIONS
 
-
-TEMPDIR=`mktemp -p /tmp -d apt-local-unionfs-XXXXXXXXX`;
-MOUNTPOINT="$TEMPDIR/mount";
-APPLICATION_DATA="$HOME/.local/share/apt-local";
-USER_CONTAINER="$APPLICATION_DATA/container";
-VERBOSE=${VERBOSE-2}; # NOTE: this is assinging a default of 2, not subtracting.
-VERSION="1.0.0";
-APT_GET=apt;
-#local BVF; # BUSYBOX_VERBOSE_FLAG
-#local FSV; # UNIONFS_VERBOSE_FLAG
-
-# NOTE: Log levels
-#  0 = silent;
-#  1 = error;
-#  2 = warning;
-#  3 = info;
-#  4 = debug;
 error() { echo -a 31 "$@" >&3; }
 warning() { echo -a 33 "$@" >&4; }
 info() { echo -a 34 "$@" >&5; }
 debug() { echo -a 35 "$@" >&6; }
-cmd_log() {
-	local COMMAND; COMMAND=$1; shift;
-	$@ 1>$TEMPDIR/fifo1 &
-	while read line; do
-		$COMMAND "$line";
-	done < $TEMPDIR/fifo1;
-}
-cmd_log_error(){ cmd_log error; }
-cmd_log_warning(){ cmd_log warning; }
-cmd_log_info(){ cmd_log info; }
-cmd_log_debug(){ cmd_log debug; }
-
-
-# NOTE: these don't need their own files because they're fifo pipes.
-# NOTE: NOTE: NOTE: Script verbose flags should not affect other output.
-exec 3>&2; exec 4>&2;
-exec 5>&1; exec 6>&1;
-for FD in `seq 6 -1 $((VERBOSE+3))`; do
-	# TODO: see if this can be done without eval;
-	#       It's just better when thing's don't use eval;
-	eval "exec $FD>/dev/null";
-done;
-
-# Check verbose flags before anything else runs, we need to enforce log level.
-if test $VERBOSE -gt 3; then
-	# XXX: Should make every busybox / linux "standard" command verbose when
-	#      called. Only when the debug mode is set to "DEBUG".
-	#      May cause issues on non busybox based / custom distributions.
-	BVF="-v";
-
-	# NOTE: When debug verbosity, make sure unionfs is verbose too.
-	USV="-d -o debug";
-fi;
-
-if test $VERBOSE -gt 4; then # Silly mode
-	set -x;
-fi;
-
-
-# Early exit, don't waste time with extra setup if we don't need it.
-# NEEDS coreutils: that's the only package this can't download for itself.
-if ! type apt-get >&6 || \
-   ! type apt-mark >&6 || \
-   ! type apt-cache >&6 || \
-   ! type dpkg >&6 || \
-   ! type dpkg-deb >&6 || \
-   ! type dpkg-query >&6 || \
-	 ! type mkdir >&6 || \
-	 ! type grep >&6; then
-	error "Error: Couldn't find a required binary on your system.";
-	error "       To see more info, call the script with 'VERBOSE=4'";
-	error "       and try making sure the 'coreutils' package is installed.";
-	exit 1;
-fi;
-if ! type apt >&6; then
-	warning "Warning: Couldn't find APT, some colored output will be disabled.";
-	APT_GET=apt-get;
-fi;
-if ! type add-apt-repository >&6; then
-	info "Info: Missing optional, the 'add-repository' command will be disabled.";
-fi;
-
-if ! UID=`id -u` 1>/dev/null 2>/dev/null; then
-	error "Error: Failed to fetch UID of caller.";
-	error "       Running 'chmod u+x {this_script}' should fix this.";
-fi;
-
+# cmd_log() {
+# 	local COMMAND; COMMAND=$1; shift;
+# 	$@ 1>$TEMPDIR/fifo1 &
+# 	while read line; do
+# 		$COMMAND "$line";
+# 	done < $TEMPDIR/fifo1;
+# }
+# cmd_log_error(){ cmd_log error; }
+# cmd_log_warning(){ cmd_log warning; }
+# cmd_log_info(){ cmd_log info; }
+# cmd_log_debug(){ cmd_log debug; }
 
 # NOTE: should always run upon exit because we have a temp dir to clean up.
 cleanup() {
@@ -282,17 +199,6 @@ cleanup() {
 	rm $BVF -rf $TEMPDIR;
 	info "Done";
 }
-
-# BUG: exiting manually (HUP - KILL) causes the cleanup script to run twice.
-trap "cleanup" EXIT HUP INT QUIT ABRT KILL;
-
-
-# Initialize core directories.
-mkdir $BVF -p $APPLICATION_DATA;
-mkdir $BVF -p $APPLICATION_DATA/dependencies;
-mkfifo $TEMPDIR/fifo1;
-mkfifo $TEMPDIR/fifo2;
-
 
 list_missing_fixable_dependencies() {
 	# NOTE: this is now manually maintained, I don't think automating the parsing
@@ -643,9 +549,14 @@ sanitize_aptget() {
 }
 
 packages_are() {
-	# TODO: default state should be in cache, the -i == installed -u
 	local RETURN="";
 
+	# NOTE: '/var/lib/dpkg/info/' holds information files for all installed
+	#       debian packages. Files are stored with names matching the binary
+	#       package name searchable in apt, and have suffixes for their
+	#       function. '[package].list' files contain a log of all the files
+	#       modified / installed by the package. If it exists, the package
+	#       should be installed.
 	case $1 in
 		"installed") shift;
 			for PACKAGE in $*; do
@@ -844,16 +755,96 @@ update_held_packages() {
 }
 
 ################################################################################
-# Begin main.
+## MAIN
+
+## Globals (Comprehensive)
+TEMPDIR=`mktemp -p /tmp -d apt-local-unionfs-XXXXXXXXX`;
+MOUNTPOINT="$TEMPDIR/mount";
+APPLICATION_DATA="$HOME/.local/share/apt-local";
+USER_CONTAINER="$APPLICATION_DATA/container";
+VERBOSE=${VERBOSE-2}; # NOTE: this is assinging a default of 2, not subtracting.
+VERSION="1.0.0";
+APT_GET=apt;
+# BVF=; # Coreutils Verbose Flag (empty when off, `-v` when on)
+# FSV=; # UnionFS Verbose Flag (empty when off, `-d -o debug` when on)
+# UID=; # POSIX User ID (set based on execution privilage)
+# NO_COLOR=; # Instructs programs not to output in color (user supplied);
+# OIFS=; # Old Input Field Separator (shell environment storage)
+# COMMAND=; # The current command the user is trying to run.
+# MISSING_DEPENDS=; # A list of all dependencies not installed at startup.
+# FUSE=; # The UnionFS FUSE PID once daemonized.
+
+# NOTE: Log levels: 0 = silent; 1 = error; 2 = warning; 3 = info; 4 = debug;
+# NOTE: these don't need their own files because they're fifo pipes.
+# NOTE: NOTE: NOTE: Script verbose flags should not affect APT output.
+exec 3>&2; exec 4>&2;
+exec 5>&1; exec 6>&1;
+for FD in `seq 6 -1 $((VERBOSE+3))`; do
+	# TODO: see if this can be done without eval;
+	#       It's just better when thing's don't use eval;
+	eval "exec $FD>/dev/null";
+done;
+
+# Executes at DEBUG verbosity.
+if test $VERBOSE -gt 3; then
+	# Should make every "busybox" and "coreutils" command verbose when ran.
+	BVF="-v";
+	# When debug verbosity, make sure unionfs is verbose too.
+	USV="-d -o debug";
+fi;
+
+if test $VERBOSE -gt 4; then # Silly mode
+	# Print every line the shell is executing along with the result.
+	# This is hyper verbose and challenging to read, but it can help when all
+	# else has failed.
+	set -x;
+fi;
+
+
+# BUG: exiting manually (HUP - KILL) causes the cleanup script to run twice.
+trap "cleanup" EXIT HUP INT QUIT ABRT KILL;
+
+# Early exit, don't waste time with extra setup if we don't need it.
+# NEEDS coreutils: that's the only package this can't download for itself.
+if ! type apt-get >&6 || \
+   ! type apt-mark >&6 || \
+   ! type apt-cache >&6 || \
+   ! type dpkg >&6 || \
+   ! type dpkg-deb >&6 || \
+   ! type dpkg-query >&6 || \
+	 ! type mkdir >&6 || \
+	 ! type grep >&6; then
+	error "Error: Couldn't find a required binary on your system.";
+	error "       To see more info, call the script with 'VERBOSE=4'";
+	error "       and try making sure the 'coreutils' package is installed.";
+	exit 1;
+fi;
+if ! type apt >&6; then
+	warning "Warning: Couldn't find APT, some colored output will be disabled.";
+	APT_GET=apt-get;
+fi;
+if ! type add-apt-repository >&6; then
+	info "Info: Missing optional, the 'add-repository' command will be disabled.";
+fi;
+
+if ! UID=`id -u` 1>/dev/null 2>/dev/null; then
+	error "Error: Failed to fetch UID of caller.";
+	error "       Running 'chmod u+x {this_script}' should fix this.";
+fi;
+
+
+## INITIALIZE DIRECTORIES
+mkdir $BVF -p $APPLICATION_DATA;
+mkdir $BVF -p $APPLICATION_DATA/dependencies;
+mkfifo $TEMPDIR/fifo1;
+mkfifo $TEMPDIR/fifo2;
+
 
 if ! test -d "$USER_CONTAINER"; then
 	info "Info: Initializing new container...";
 	mkdir $BVF -p $USER_CONTAINER;
 
 	# NOTE: should only make DPKG and the APT suite useable.
-	# WHAT: Why the fuck does DPKG need three diferent lock files?
-	#      I'm sure there's a good reason, but at least someone could put it
-	#      in the docs somewhere lol.
 	ensure -f \
 		$USER_CONTAINER/var/lib/dpkg/lock \
 		$USER_CONTAINER/var/lib/dpkg/lock-frontend \
@@ -863,18 +854,15 @@ if ! test -d "$USER_CONTAINER"; then
 		$USER_CONTAINER/var/cache/apt/archives/lock \
 		$USER_CONTAINER/var/cache/debconf/passwords.dat;
 
-	# NOTE: essential folders will also need to be initialized, because for some,
-	#       reason, APT needs them to be owned by the caller, otherwise shit
-	#       fails.
+	# NOTE: essential folders will also need to be initialized, to correctly set
+	#       the file ownership and privilage metadata.
 	ensure \
-			$USER_CONTAINER/var/lib/apt/lists/partial \
-			$USER_CONTAINER/var/cache/apt/archives/partial;
+		$USER_CONTAINER/var/lib/apt/lists/partial \
+		$USER_CONTAINER/var/cache/apt/archives/partial;
 fi;
 
-# NOTE: perform path modifications before looking for dependencies.
-list_missing_fixable_dependencies > $TEMPDIR/fifo1 &
 
-MISSING_DEPENDS=`cat $TEMPDIR/fifo1`;
+MISSING_DEPENDS=`list_missing_fixable_dependencies`;
 if test -n "$MISSING_DEPENDS"; then
 	install_dependencies $MISSING_DEPENDS;
 fi;
@@ -899,19 +887,15 @@ if sync_control_file; then
 		if test "$COMMAND" = "full-upgrade"; then
 			echo "Are you sure you want to run 'full-upgrade' in this state?";
 			echo "This will probably always cause unnecessary bloat.";
-			while read -p 'y/N: ' YN; do
-				case "$YN" in
-					[yY]*) break;;
-					[nN]*) exit 100;;
-					*) echo "Improper response, please type 'yes', or 'no'.";;
-				esac;
-			done;
+			if ! query_yn; then
+				exit 100;
+			fi;
 		fi;
 	fi;
 fi;
 
-# NOTE: adjust apt-get to supress Autoremove warnings.
-# TODO: implement local AUTOREMOVE warnings.
+# NOTE: adjusts apt-get to supress Autoremove warnings.
+# TODO: implement local AUTOREMOVE eligibility notification.
 APT_GET="$APT_GET -o APT::Get::HideAutoRemove=1";
 
 warning "Warning: Checking for broken packages introduced by the sysadmin...";
@@ -923,18 +907,8 @@ fi;
 
 
 case "$COMMAND" in
-	# NOTE: Prefer apt when available, otherwise fallback to apt-get.
-	#       Really old systems may not have apt; but it should always be there.
-	#
 	# TODO: if I can't only list packages with updates from the user container,
 	#       then don't list any at all.
-	#
-	# NOTE: '/var/lib/dpkg/info/' holds information files for all installed
-	#       debian packages. Files are stored with names matching the binary
-	#       package name searchable in apt, and have suffixes for their
-	#       function. '[package].list' files contain a log of all the files
-	#       modified / installed by the package. If it exists, the package
-	#       should be installed.
 	'list')
 		# TODO: standardize output of this command; either by limiting
 		#       functionality, or extending `dpkg-query --list` to mimic `apt list`.
@@ -1024,8 +998,8 @@ case "$COMMAND" in
 
 
 	# QOL COMMANDS
-	'pack-env')
-
+	'export-path')
+		nop; # TODO: export the user pseudochroot.
 	;;
 	'exec')
 		# NOTE: It may be a good idea to prevent users from calling apt-get

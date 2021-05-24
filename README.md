@@ -89,6 +89,11 @@ a chroot within the UnionFS.
    within your system. So if programs search for assets within `usr/lib/share`
    for example, then they may break or fail to load because the assets were
    instead installed into the user package store chroot.
+ * This package can't notify you when the root user has uninstalled packages
+   your local store depends on. So your applications may fail unexpectedly
+   if the sysadmin does spring cleaning. However, this program can automatically
+   detect what packages changed in between it's executions, so it will rectify
+   missing packages the next time it runs.
 
 
 [notroot]: https://github.com/Gregwar/notroot
