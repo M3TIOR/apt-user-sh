@@ -37,6 +37,9 @@ the projects dependent packages for each supported system are as follows:
 It may work on more systems than the ones listed so try them out before
 filling a bug report.
 
+Big ***NOTE*** `coreutils` **is the only package which must be installed prior
+to execution**. All of the binaries provided by that package are pretty much
+essential to do anything complex with the filesystem.
 
 ### User packages!
 This is kinda the whole point. You can add your own packages to your `$HOME`
@@ -76,6 +79,8 @@ a chroot within the UnionFS.
  * Since packages are managed within APT, you have most of it's benefits;
    including but not limited to, dependency tracking, hash validation,
    familiar UI and deterministic installation.
+ * Restricts users from installing packages which affect system
+   configuration to reduce bloat.
 
 
 ### Limitations?

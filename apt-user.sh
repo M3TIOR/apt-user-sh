@@ -391,6 +391,11 @@ pseudochroot() {
 
 	done < /etc/environment
 
+	# Don't forget to add user's binaries.
+	if test -d "$HOME/.local/bin"; then
+		PATH="$HOME/.local/bin:$PATH";
+	fi;
+
 	if test -n "$EMULATE_TYPE"; then
 		# If were' in emulate type mode, we just ensure the program exists in the
 		# result PATH.
@@ -401,8 +406,6 @@ pseudochroot() {
 			return 1;
 		fi;
 	fi;
-
-
 
 	LAST_SEGMENT=`test -n "$INCLUSIVE" && echo ":$CPATH"`;
 	local CPATH;
@@ -512,7 +515,6 @@ containerize() {
 	# XXX: Unfortunately apt and apt-get force require root for installing
 	#      packages. I wanted this to be done without even faking root,
 	#      so there wouldn't be any issues with file permissions down the road.
-	#      GOOD THING: to fake root; call this script with -R
 	capture_status pseudochroot -i $APPLICATION_DATA/dependencies \
 		proot -v $((VERBOSE-5)) --cwd="$CWD" \
 			-b "/etc/host.conf" \
@@ -738,6 +740,7 @@ update_held_packages() {
 	#         * init systems (systemd, ...)
 	#         * initrd / ram startup filesystems
 	#         * bootloaders ()
+	#         * privilage excalation devices (sudo, pkexec...)
 	#       basically any other package that modifies administrator stuff.
 	#
 	# /vmlinuz - is a link to the kernel on debian based systems.
@@ -758,12 +761,9 @@ update_held_packages() {
 ## MAIN
 
 ## Globals (Comprehensive)
+a="/`readlink -f $0`"; a=${a%/*}; a=${a#/}; a=${a:-.}; PROCDIR=$(cd "$a"; pwd);
 TEMPDIR=`mktemp -p /tmp -d apt-local-unionfs-XXXXXXXXX`;
-MOUNTPOINT="$TEMPDIR/mount";
-APPLICATION_DATA="$HOME/.local/share/apt-local";
-USER_CONTAINER="$APPLICATION_DATA/container";
 VERBOSE=${VERBOSE-2}; # NOTE: this is assinging a default of 2, not subtracting.
-VERSION="1.0.0";
 APT_GET=apt;
 # BVF=; # Coreutils Verbose Flag (empty when off, `-v` when on)
 # FSV=; # UnionFS Verbose Flag (empty when off, `-d -o debug` when on)
@@ -773,6 +773,12 @@ APT_GET=apt;
 # COMMAND=; # The current command the user is trying to run.
 # MISSING_DEPENDS=; # A list of all dependencies not installed at startup.
 # FUSE=; # The UnionFS FUSE PID once daemonized.
+# RETURN1=;...RETURN9=; Reserved C-like function return variables.
+# RETURN=; Reserved alternate storage location for exit codes.
+
+
+# Load external common variables.
+. $PROCDIR/common.sh
 
 # NOTE: Log levels: 0 = silent; 1 = error; 2 = warning; 3 = info; 4 = debug;
 # NOTE: these don't need their own files because they're fifo pipes.
@@ -868,7 +874,7 @@ if test -n "$MISSING_DEPENDS"; then
 fi;
 
 if ! is_unlocked; then
-	error "Error: You're already running an instanced of apt-local, or your";
+	error "Error: You're already running an instanced of apt-user, or your";
 	error "       sysadmin is running an apt command and the root is locked.";
 	error "        --> try again later when that has finished <--";
 	exit 100;
@@ -901,7 +907,7 @@ APT_GET="$APT_GET -o APT::Get::HideAutoRemove=1";
 warning "Warning: Checking for broken packages introduced by the sysadmin...";
 containerize -R $APT_GET install -q --fix-broken --yes >&5;
 if ! test "$?" -eq 0; then
-	error "Error: Couldn't fix broken packages, see 'VERBOSE=4 apt-local ...'";
+	error "Error: Couldn't fix broken packages, run 'VERBOSE=4 apt-local ...'";
 	error "       for more information and consider submitting a bug report.";
 fi;
 
@@ -910,18 +916,21 @@ case "$COMMAND" in
 	# TODO: if I can't only list packages with updates from the user container,
 	#       then don't list any at all.
 	'list')
-		# TODO: standardize output of this command; either by limiting
-		#       functionality, or extending `dpkg-query --list` to mimic `apt list`.
-		if type apt > /dev/null; then containerize -R apt list $*;
-		else containerize -R dpkg-query --list $*; fi;
+		containerize -R dpkg-query --list $*;
 	;;
 	'search')
-		if type apt > /dev/null; then containerize -R apt search $*;
-		else containerize -R apt-cache search $*; fi;
+		if type apt > /dev/null && test -z "$NO_COLOR"; then
+			containerize -R apt search $*;
+		else
+			containerize -R apt-cache search $*;
+		fi;
 	;;
 	'show')
-		if type apt > /dev/null; then containerize -R apt show $*;
-		else containerize -R apt-cache show $*; fi;
+		if type apt > /dev/null && test -z "$NO_COLOR"; then
+			containerize -R apt show $*;
+		else
+			containerize -R apt-cache show $*;
+		fi;
 	;;
 	'install')
 		# NOTE: I want users to be able to install newer packages over
@@ -929,6 +938,12 @@ case "$COMMAND" in
 		#       in the system to their own container, for version isolation when
 		#       desired. --reinstall should allow package isolation,
 		containerize -R $APT_GET install $*;
+
+		# TODO: check packages for external resources, and  add them to a list
+		#       for which the binaries will be managed with update-alternatives
+		#       so they can automatically be run within the chroot.
+		#       This will remove the need to have the exec function at all
+		#       and reduce the need for advanced user intervention.
 	;;
 	'upgrade')
 		containerize -R $APT_GET upgrade $*;
@@ -996,11 +1011,9 @@ case "$COMMAND" in
 		fi;
 	 ;;
 
+	# TODO: add user update-alternatives functionality to improve binary compat.
 
 	# QOL COMMANDS
-	'export-path')
-		nop; # TODO: export the user pseudochroot.
-	;;
 	'exec')
 		# NOTE: It may be a good idea to prevent users from calling apt-get
 		#       or other internals from exec as they could screw up the package
@@ -1051,7 +1064,6 @@ case "$COMMAND" in
 	echo "QOL commands added by yours truely:";
 	echo "\tadd-repository - calls add-apt-repository within the chroot when available";
 	echo "\thas-installed - checks if passed packages are installed on the system";
-	echo "\texport-paths - duplicates the current PATH inside the data dir and exports it";
 	echo "\texec - a utility for calling commands that would otherwise break when installed";
 	echo "\t       by this script. It runs the passed command fully in the chroot.";
 	echo "\t       can optionally be passed \`-g\` which will instead make it";
