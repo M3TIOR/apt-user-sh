@@ -1,5 +1,7 @@
-#!/bin/sh -e
-# NOTE; This script is not intended to be sourced.
+# shellcheck shell=sh
+# @file - setup.sh
+# @brief - Shared setup code for the apt-user.sh suite.
+###############################################################################
 # Copyright 2020 Ruby Allison Rose (aka. M3TIOR)
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -21,7 +23,32 @@
 # IN THE SOFTWARE.
 
 ################################################################################
-## POLYFILLS
+## Globals
+
+# SELF=; # The path to the currently executing script.
+
+# shellcheck disable=SC2059,SC2034
+VERSION="0.2"; # Should be included in all scripts.
+APPDATA="$HOME/.local/share/apt-user";
+MOUNT="$APPDATA/mnt";
+CHROOT="$APPDATA/root";
+BINDIR="$APPDATA/bin";
+
+# BUGFIX: Prevents nested shells from being unable to log.
+LOGFILE="${LOGFILE:=$TMP/${APPNAME}.$$.log}";
+
+# Record initial FDs for processing later.
+FD1="$(readlink -n -f /proc/$$/fd/1)";
+FD2="$(readlink -n -f /proc/$$/fd/2)";
+
+################################################################################
+## Functions
+
+setup_cleanup(){
+	if test "$VERBOSE" -gt "0"; then rm -f "$LOGFILE.2"; fi;
+	if test "$VERBOSE" -gt "1"; then rm -f "$LOGFILE.1"; fi;
+}
+
 if test -z "$NO_COLOR"; then
 	# When we have ANSI compliance use the normal polyfill.
 	echo(){
@@ -32,13 +59,14 @@ if test -z "$NO_COLOR"; then
 		local OPTARG;            OPTARG='';
 		local OPTIND;            OPTIND=0;
 		local DISABLE_NEWLINE;   DISABLE_NEWLINE=0;
-		local ANSI_COLOR;        ANSI_COLOR="";
+		local ANSI_COLOR;        ANSI_COLOR='';
+		local FD1='';
 
 		while getopts na:- option; do
 			case "$option" in
-				n) DISABLE_NEWLINE=1;;
-				a) ANSI_COLOR="$OPTARG";;
-				-) break;;
+				'n') DISABLE_NEWLINE=1;;
+				'a') ANSI_COLOR="$OPTARG";;
+				'-') break;;
 			esac
 		done
 
@@ -65,15 +93,52 @@ else
 		local OPTARG; local OPTIND; local DISABLE_NEWLINE; local ANSI_COLOR;
 		OPTARG=''; OPTIND=0; DISABLE_NEWLINE=0; ANSI_COLOR="";
 		while getopts na: option; do case "$option" in
-		n) DISABLE_NEWLINE=1;;
-		a) ANSI_COLOR="$OPTARG";; esac; done; shift $(($OPTIND-1));
-		printf '%s' "$*"; if test "$DISABLE_NEWLINE" -eq "0"; then printf '\n'; fi;
+		'n') DISABLE_NEWLINE=1;;
+		'a') ANSI_COLOR="$OPTARG";;
+		'-') break;; esac; done; shift $(($OPTIND-1));
+		printf '%b' "$*"; if test "$DISABLE_NEWLINE" -eq "0"; then printf '\n'; fi;
 	}
 fi;
 
-################################################################################
-## MAIN
+error() { echo -a 31 "Error: $@" >&3; }
+warning() { echo -a 33 "Warning: $@" >&4; }
+info() { echo -a 34 "Info: $@" >&5; }
+debug() { echo -a 35 "Debug: $@" >&6; }
 
-a="/`readlink -f $0`"; a=${a%/*}; a=${a#/}; a=${a:-.}; BASEDIR=$(cd "$a"; pwd);
-# TODO: implement synchronization of different user stores with the root store
-#       to be run after dpkg finishes installing packages.
+################################################################################
+## Main Script
+
+# NOTE: This should execute prior to all other code besides global variables
+#       and function definitions.
+
+# Redirect to logfiles.
+exec 1>>"$LOGFILE.1";
+exec 2>>"$LOGFILE.2";
+
+# NOTE: Log levels: 0 = silent; 1 = error; 2 = warning; 3 = info; 4 = debug;
+exec 3>&2; exec 4>&2; exec 5>&2; exec 6>&2;
+for FD in `seq 6 -1 $((VERBOSE+3))`; do
+	eval "exec $FD>/dev/null";
+done;
+
+if test $VERBOSE -gt 4; then # Silly mode
+	# Print every line the shell is executing along with the result.
+	# This is hyper verbose and challenging to read, but it can help when all
+	# else has failed.
+	PS4="\$SELF in PID#\$\$ @\$LINENO: ";
+	set -x;
+	trap "set >&2;" 0;
+fi;
+
+# And this will pick up the log, redirecting it to the terminal if we have one.
+if test -n "$FD1" -a "$FD1" != "/dev/null" -a "$FD1" != "$LOGFILE.1"; then
+	tail --pid="$$" -f "$LOGFILE.1" >> "$FD1" & trap "kill $!;" 0;
+fi;
+if test -n "$FD2" -a "$FD2" != "/dev/null" -a "$FD2" != "$LOGFILE.2"; then
+	tail --pid="$$" -f "$LOGFILE.2" >> "$FD2" & trap "kill $!;" 0;
+fi;
+
+# XXX: Fixes a racing condition caused by the shared logging setup.
+sleep 0.01;
+
+trap "setup_cleanup;" 0;
