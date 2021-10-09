@@ -188,21 +188,6 @@ is_unionfs_mounted(){
 		"$MOUNT" 1>/dev/null 2>/dev/null;
 }
 
-dpkg_status_to_json() {
-	printf "{";
-	sed -zE \
-		-e 's/"/\\"/g' \
-		-e 's/\n / /g' \
-		-e 's/([a-zA-Z\-]+): ([^\n]+)\n/"\1":"\2",/g' \
-		-e 's/,\n/\}\{/g' \
-		"$1";
-
-	# TODO: possiblly truncate empty object at the end of this.
-	#       status file should always end in two newlines so "},{" must be
-	#       dealt with somehow.
-	printf "}";
-}
-
 sync_control_file() {
 	# NOTE: unfortuantely, dpkg uses a single control file scheme, which is
 	#       incompatable with automatic updates from the unionfs. This implements
@@ -210,162 +195,32 @@ sync_control_file() {
 	#       file into the user control file without overwriting user managed
 	#       package metadata.
 
-	ARCH="$(dpkg-architecture -q DEB_HOST_ARCH)" \
-	TEMPDIR="$TEMPDIR" \
-	CHROOT="$CHROOT" \
-	APPDATA="$APPDATA" \
-	python "$PROCDIR/supplements/sync-control-file.py"
-
-	# Only updates the control file if there have been changes made by root.
-	if test -e "$APPDATA/root-status.old" \
-	   && diff "$APPDATA/root-status.old" \
-	           /var/lib/dpkg/status 1>/dev/null 2>/dev/null;
-	then
-		return 0;
-	fi;
-
-	# NOTE: this tries to reduce the window of time which this function is
+	# NOTE: This tries to reduce the window of time which this function is
 	#       vulnerable to race conditions introduced by the root package store.
 	cp /var/lib/dpkg/status "$TEMPDIR/root-status";
-	dpkg_status_to_json "$TEMPDIR/root-status" > "$TEMPDIR/root-status.json";
-	dpkg_status_to_json "$CHROOT/var/lib/dpkg/status" > "$TEMPDIR/user-status.json";
-
-	# First we have to find out what packages we actually have in the user store.
-	# From there, we'll overwrite entries from the root status file using the user
-	# entreis. Since the data within the user data store should always be current
-	# we can assume that no other packages have changed since our last invocation.
+	cp "$CHROOT/var/lib/dpkg/status" "$TEMPDIR/user-status";
 
 	# TODO: introduce autoremove functionality to reduce bloat by checking for
 	#       duplicated auto-installed packages between the user and root.
-
-	# jq -Mr --slurpfile root ./test.json \
-	# 	'if .[1] == "" then (.[0] as $pkgname | $root[0][] | until(.Package == $pkgname; empty) | [.Package, .Architecture]) else . end | tostring'
-	# WTF `jq` why the hell is this slower? The code is shorter, so this should
-	# be faster right? Perhaps it's something to do with `jq`'s itteration
-	# algorithm. May just be slower because it's interpreted more times?
-	# Or it could also be that I'm an idiot and didn't remember that
-	# each pipe conditional acts on every element of the array it's being passed.
-
-	# At this point I'm worried about the speed impact, JQ adds a lot to the
-	# execution time depending on the number of packages in our store.
-	# My root store took ~5.5s to process. That's pretty SLOOOOOOOWWWWW.
-
-	# # So slurp up everything.
-	# basename -a -s '.list' "$CHROOT/var/lib/dpkg/info/"*.list \
-	# 	| sed -E -e 's/(.+):(.+)|(.+)/["\1\3","\2"]/' \
-	# 		| jq -Mr \
-	# 			--slurpfile user "$TEMPDIR/user-status.json" \
-	# 			--slurpfile root "$TEMPDIR/root-status.json" \
-	# 			"$(printf '%s %s %s %s %s %s %s %s %s' \
-	# 				'. as $pkg |' \
-	# 				'$root[] |'
-	# 					'select(.Package == $pkg[0]' \
-	# 					'and' \
-	# 					'any(.Architecture | inside([$pkg[1], "any",' \
-	# 					"\"$(dpkg-architecture -q DEB_HOST_ARCH)\"" \
-	# 				']))) |' \
-	# 				'if .Package == $pkgname then . else empty end else . end |'
-	# 				'$root[] | select($[]))' \
-	# 			)";
+	#       NOTE: I don't remember why I made this todo or what it has to do
+	#             with this specific function...
 
 	# TBH I really don't want to include python because it's pretty big
 	# comparatively speaking, and it's on fewer systems. But unfortunately
 	# JQ seems to be a real piece of work and this is the fastest solution
 	# I have for now.
-	{
-		ARCH="$(dpkg-architecture -q DEB_HOST_ARCH)";
-		#printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s"
-		# Could make this even faster by removing the multiple echos and using
-		# a single printf, but that would look like garbage and I want this to be
-		# at least somewhat maintainable.
-		echo 'import json;';
-		echo 'from pathlib import Path';
-		echo # Hopefully writing these into memory won't be a huge problem.
-		echo # It's only like 10MiB max.
-		echo "user_status = json.load(open(\"$TEMPDIR/user-status.json\"))";
-		echo "root_status = json.load(open(\"$TEMPDIR/root-status.json\"))";
-		echo 'root_status.pop(); user_status.pop()'; # sanitize garbage objects.
-		echo
-		echo "user_packages = tuple(f.stem for f in Path(\"$CHROOT/var/lib/dpkg/info/\").iterdir())";
-		echo
-		echo 'def only_user_packages(e):';
-		echo "	if e[\"Package\"] in user_packages and e[\"Arch\"] in (\"all\", \"$ARCH\"):";
-		echo '		return True';
-		echo '	elif f"{e["Package"]}:{e["Arch"]}" in user_packages:';
-		echo '		return True';
-		echo '	else:';
-		echo '		return False';
-		echo
-		echo 'user_entries = filter(only_user_packages, user_status)';
-		echo
-		echo 'def replace_with_user_entries(e):';
-		echo '	for x in user_entries';
-		echo '		if x["Package"] == e["Package"] and x["Arch"] == e["Arch"]:';
-		echo '			return x';
-		echo '	return e';
-		echo
-		echo 'root_status = list(map(replace_with_user_entries, root_status))';
-		echo "json.dump(root_status, open(\"$TEMPDIR/user-status.new.json\",mode=\"tw\"))"
-	} | python -;
+	ARCH="$(dpkg --print-architecture)" \
+	TEMPDIR="$TEMPDIR" \
+	CHROOT="$CHROOT" \
+	APPDATA="$APPDATA" \
+	python "$PROCDIR/supplements/sync-control-file.py";
 
-	# rm $APPDATA/status.json;
-	# touch $APPDATA/status.json;
+	if test "$?" != 0; then
+		return 1;
+	fi;
 
-
-
-	# # The current algorithm will use a two pass system. It's very inefficient.
-	# # TODO: Make this faster.
-	# OIFS="$IFS"; IFS="";
-	# while read LINE; do
-	# 	IFS="$OIFS";
-	# 	if test -n "$SKIP"; then
-	# 		if test -z "$LINE"; then
-	# 			SKIP="";
-	# 			# Ensure replacement of newline into control file.
-	# 			echo >> $APPLICATION_DATA/dpkg-status;
-	# 		fi;
-	# 	elif starts_with "$LINE" "Package: " &&
-	# 	   test -e "$USER_CONTAINER/var/lib/dpkg/info/${LINE#Package: }.list"; then
-	# 		# This first pass should concatenate all system packages not in the chroot
-	# 		# to the intermediary file.
-	# 		SKIP="1";
-	# 	else
-	# 		# Append lines into the intermediary file.
-	# 		echo -- "$LINE" >> $APPLICATION_DATA/dpkg-status;
-	# 	fi;
-	# 	IFS=""; # reset IFS before next `read` cycle
-	# done < $TEMPDIR/dpkg-system-status.new;
-	#
-	# while read LINE; do
-	# 	IFS="$OIFS";
-	#
-	# 	if test -n "$SKIP"; then
-	# 		if test -z "$LINE"; then
-	# 			SKIP="";
-	# 			printf "\n" >> $APPLICATION_DATA/dpkg-status;
-	# 		fi;
-	# 	elif starts_with "$LINE" "Package: " &&
-	# 	     test ! -e "$USER_CONTAINER/var/lib/dpkg/info/${LINE#Package: }.list"; then
-	# 		# This second pass should push all local package metadata down into the
-	# 		# intermediary file.
-	# 		SKIP="1";
-	# 	else
-	# 		printf "$LINE\n" >> $APPLICATION_DATA/dpkg-status;
-	# 	fi;
-	#
-	# 	IFS="";
-	# done < $USER_CONTAINER/var/lib/dpkg/status;
-	# IFS="$OIFS";
-	#
-	# # Migrate the new status file to the old one.
-	# cp -u $TEMPDIR/root-status.new $APPDATA/root-status.old;
-	#
-	# # Then, finally we need to copy over the intermediary into the user container
-	# # so the contained dpkg and apt suite can see the system package changes and
-	# # accomidate for them.
-	# cp -u $APPLICATION_DATA/dpkg-status $USER_CONTAINER/var/lib/dpkg/status;
-	#
-	# return 0;
+	cp -u "$TEMPDIR/root-status" "$APPDATA/root-status.old";
+	cp -u "$TEMPDIR/user-status" "$CHROOT/var/lib/dpkg/status";
 }
 
 update_held_packages() {
