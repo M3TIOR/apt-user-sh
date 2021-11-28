@@ -253,11 +253,11 @@ pseudochroot()
 			OIFS="$IFS";
 			IFS=":";
 			for p in $line; do
-				PATH="$NEWROOT/$p:$PATH";
+				PATH="$PATH:$NEWROOT/$p";
 			done;
 			IFS="$OIFS";
-			PATH="$NEWROOT:$PATH";
-			PATH=${PATH%:}; # Remove the last suffix in a post process.
+			PATH="$PATH:$NEWROOT";
+			PATH=${PATH#:}; # Remove the unnecessary prefix in a post process.
 		fi;
 
 	done < /etc/environment

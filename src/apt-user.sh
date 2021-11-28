@@ -233,6 +233,7 @@ update_held_packages() {
 	#         * initrd / ram startup filesystems
 	#         * bootloaders ()
 	#         * privilage excalation devices (sudo, pkexec...)
+	#         * APT; if users can install a system breaking version, that's bad.
 	#       basically any other package that modifies administrator stuff.
 	#
 	# /vmlinuz - is a link to the kernel on debian based systems.
@@ -247,7 +248,7 @@ update_held_packages() {
 			true;
 		fi;
 	} \
-	| xargs apt-mark hold $STAGED >&6;
+	| xargs apt-mark hold >&2;
 }
 
 print_help(){
@@ -382,21 +383,12 @@ warning "Syncing 'dpkg' control files.";
 if sync_control_file; then
 	warning "Updating held packages.";
 	if ! update_held_packages; then
-		warning "Couldn't update held packages; it's inadvisable to run" \
-		        "'apt-local full-upgrade' in this state. For more info" \
-		        "see 'VERBOSE=4 apt-local ...'";
-
-		if test "$COMMAND" = "full-upgrade"; then
-			echo "Are you sure you want to run 'full-upgrade' in this state?";
-			echo "This will probably always cause unnecessary bloat.";
-			if ! query_yn; then
-				exit 100;
-			fi;
-		fi;
+		warning "Couldn't update held packages; bloat may be installed " \
+		        "in this state. For more info see 'VERBOSE=4 apt-local ...'";
 	fi;
 fi;
 
-warning "Checking for broken packages introduced by the sysadmin...";
+warning "Double checking for broken packages introduced by the sysadmin...";
 apt-get install -q --fix-broken --yes >&5;
 if ! test "$?" -eq 0; then
 	error "Couldn't fix broken packages, run 'VERBOSE=4 apt-local ...'" \

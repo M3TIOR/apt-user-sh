@@ -29,13 +29,13 @@
 
 # shellcheck disable=SC2059,SC2034
 VERSION="0.2"; # Should be included in all scripts.
-APPDATA="$HOME/.local/share/apt-user";
+APPDATA="${XDG_DATA_HOME:-$HOME/.local/share}/apt-user";
 MOUNT="$APPDATA/mnt";
 CHROOT="$APPDATA/root";
 BINDIR="$APPDATA/bin";
 
 # BUGFIX: Prevents nested shells from being unable to log.
-LOGFILE="${LOGFILE:=$TMP/${APPNAME}.$$.log}";
+LOGFILE="${LOGFILE:-$TMP/${APPNAME}.$$.log}";
 
 # Record initial FDs for processing later.
 FD1="$(readlink -n -f /proc/$$/fd/1)";
