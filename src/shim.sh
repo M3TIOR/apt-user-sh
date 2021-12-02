@@ -19,14 +19,6 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-SELF=$(readlink -n "$0");
-PROCDIR="$(dirname "$SELF")";
-APPNAME="$(basename "$SELF")";
-APPDATA="${XDG_DATA_HOME:-$HOME/.local/share}/apt-user";
-MOUNT="$APPDATA/mnt";
-CHROOT="$APPDATA/root";
-BINDIR="$APPDATA/bin";
-
 # @brief - Emulates a chroot executable search without sandboxing.
 # @usage - pseudochroot [-i] [-a FILE] [-t] NEWROOT PROGRAM [ARGS...]
 # @param [-i] - Instead of replacing the PATH, it's appended to.
@@ -45,9 +37,9 @@ pseudochroot()
 
 	while getopts iat option; do
 		case "$option" in
-			i) INCLUSIVE="1";;
-			a) ASYNC="$OPTARG";;
-			t) EMULATE_TYPE="1";;
+			"i") INCLUSIVE="1";;
+			"a") ASYNC="$OPTARG";;
+			"t") EMULATE_TYPE="1";;
 		esac;
 	done;
 
@@ -153,7 +145,7 @@ pseudochroot()
 # @usage sanitize_quote_escapes STRING('s)...
 # @param STRING('s) - The string or strings you wish to sanitize.
 sanitize_pattern_escapes()
-(
+{
 	DONE=''; f=''; b=''; c=''; # TODO='';
 
 	TODO="$*";
@@ -174,29 +166,51 @@ sanitize_pattern_escapes()
 	IFS="$OIFS";
 
 	printf '%s' "$DONE";
-)
+}
+
+bindargs()
+{
+	CHROOT="${XDG_DATA_HOME:-$HOME/.local/share}/apt-user/root";
+
+	# Only bind paths which binaries depend on; configuration paths
+	# should be handled by root, though additional bind parameters may be
+	# passed by the user through BINDS
+	printf "%s\n" "-b $CHROOT/bin:/bin";
+	printf "%s\n" "-b $CHROOT/lib:/lib";
+	printf "%s\n" "-b $CHROOT/usr:/usr";
+
+	# NOTE: it's hard to know whether these libary folders are stable
+	#       between architectures; I don't think they are, based on my experience
+	#       with cross compilation and quemu so that's something to remember
+	#       for future bugs including either cross compilation or different host
+	#       architectures besides x86_64 systems like the one I'm building on.
+	printf "%s\n" "-b $CHROOT/lib32:/lib32";
+	printf "%s\n" "-b $CHROOT/lib64:/lib64";
+	printf "%s\n" "-b $CHROOT/libx32:/libx32";
+
+	OIFS="$IFS"; IFS=";"; for bind in $BINDS; do
+		printf "%s\n" "-b $bind";
+	done;
+}
+
+this()
+{
+	SELF="$(readlink -n "$0")";
+	APPDATA="${XDG_DATA_HOME:-$HOME/.local/share}/apt-user";
+	CHROOT="$APPDATA/root";
+	BINDIR="$APPDATA/bin";
+
+	printf "%s\n" "$CHROOT/${SELF#$(sanitize_pattern_escapes "$BINDIR")}";
+}
 
 # We want this to be inclusive because the root may have installed our
 # predicate packages for us; this may not be standalone.
-alias proot="pseudochroot -i $CHROOT proot";
+alias proot="pseudochroot -i ${XDG_DATA_HOME:-$HOME/.local/share}/apt-user/root proot";
 
-TARGET="/${SELF#$(sanitize_pattern_escapes "$BINDIR")}";
-# Only bind paths which binaries depend on; configuration paths
-# should be handled by root, though additional bind parameters may be
-# passed by the user through BINDS
-BINDARGS="$BINDARGS -b $CHROOT/bin:/bin";
-BINDARGS="$BINDARGS -b $CHROOT/lib:/lib";
-BINDARGS="$BINDARGS -b $CHROOT/usr:/usr";
+# This exports all environment variables in the scope of the shim, effectively
+# passing through any variables handed over individually. It's kinda hacky,
+# unfortunately this also re-sets every shell function as well which is a lot
+# of unnecessary overhead.
+set -a; eval "$(set)" 2>/dev/null; set +a;
 
-# NOTE: it's hard to know whether these libary folders are stable
-#       between architectures; I don't think they are, so that's
-#       something to remember for future bugs including either cross
-#       compilation or different host architectures besides x86_64 systems.
-BINDARGS="$BINDARGS -b $CHROOT/lib32:/lib32";
-BINDARGS="$BINDARGS -b $CHROOT/lib64:/lib64";
-BINDARGS="$BINDARGS -b $CHROOT/libx32:/libx32";
-
-OIFS="$IFS"; IFS=";"; for bind in $BINDS; do
-	BINDARGS="$BINDARGS -b $bind";
-done;
-proot $BINDARGS "$CHROOT/$TARGET";
+proot $(bindargs) "$(this)" $*;
