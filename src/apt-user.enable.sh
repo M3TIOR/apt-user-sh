@@ -64,24 +64,6 @@ e553d8219517542a4dbbaee02757af2()
 	################################################################################
 	## Main Script
 
-	# TODO: Implement as opt-in service instead of using the apt-user main script
-	#       for everything. We can initialize the unionfs here and do pseudochroot
-	#       path modifications to read the user environment. When this isn't
-	#       sourced by .profile, apt-user will just instruct users to opt-in.
-	#
-	#       This allows us to have a single dedicated UnionFS FUSE per user
-	#       that doesn't need to be initialized multiple times and impact
-	#       performance across multiple calls to apt-user.
-	#
-	#       Program linkage can be handled selectively based on known compatability
-	#       with the pseudochroot. Default linkage should enforce every user binary
-	#       be started within proot for maximum compatability.
-	#
-	# REVISION:
-	#       Actually, it would be better for compatability if each application was
-	#       wrapped in a proot binder. The unionfs will still always need to be up.
-	#
-
 	alias unionfs-fuse="pseudochroot -i -a $APPDATA/fuse.pid $CHROOT unionfs-fuse";
 
 	# Executes at debug verbosity.
@@ -139,27 +121,16 @@ e553d8219517542a4dbbaee02757af2()
 
 ed37f8371f9acceef643f3a63a90193(){
 	VERBOSE=${VERBOSE:-2};
+	PATH="";
 
 	. "$PROCDIR/apt-user.shared.d/setup.sh";
 
-	PATH="";
-	while read line; do
-		# The sysadmin shouldn't put a lowercase PATH in, because posix
-		# environment variables are case sensitive.
-		VAR=${line%=*}; if test "$VAR" = "PATH"; then
-			line=${line#*=}; line=${line#\"}; line=${line%\"};
-			OIFS="$IFS";
-			IFS=":";
-			for p in $line; do
-				mkdir -p "$BINDIR/$p" >&2;
-				PATH="$PATH:$BINDIR/$p";
-			done;
-			IFS="$OIFS";
-			PATH=${PATH#:}; # Remove the prefix in a post process.
-		fi;
+	for p in $(. /etc/environment; IFS=":"; echo "$PATH"); do
+		mkdir -p "$BINDIR/$p" >&2;
+		PATH="$PATH:$BINDIR/$p";
+	done;
+	PATH=${PATH#:}; # Remove the prefix in a post process.
 	echo "$PATH";
-
-	done < /etc/environment;
 }
 
 # Don't cluster user's .profile hashmap; everything is encapsulated

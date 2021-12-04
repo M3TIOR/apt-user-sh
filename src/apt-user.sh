@@ -251,6 +251,21 @@ update_held_packages() {
 	| xargs apt-mark hold >&2;
 }
 
+update_shims() {
+	#diff "$CHROOT/var/log/dpkg.log" "$APPDATA/dpkg.log.old";
+	for p in $(. /etc/environment; IFS=":"; echo "$PATH"); do
+		basename -a "$CHROOT/$p"/* | {
+			cd "$BINDIR/$p";
+			while read p; do ln -srfT "$APPDATA/shim.sh" "$p"; done;
+			
+			cd "$CHROOT/$p";
+			basename -a "$BINDIR/$p"/* > "$TEMPDIR/fifo1" &;
+			basename -a "$CHROOT/$p"/* > "$TEMPDIR/fifo2" &;
+			comm -3 "$TEMPDIR/fifo1" "$TEMPDIR/fifo2" | xargs rm -v;
+		};
+	done;
+}
+
 print_help(){
 	echo "Usage: apt-user [-hV] [-v [NUM]] [-U] APT_COMMAND [APTARGS...]";
 	echo;
@@ -367,10 +382,10 @@ if ! UID="$(id -u)"; then
 fi;
 
 
-mkdir -p $APPDATA;
-mkdir -p $CHROOT;
-mkfifo $TEMPDIR/fifo1;
-mkfifo $TEMPDIR/fifo2;
+mkdir -p "$APPDATA";
+mkdir -p "$CHROOT";
+mkfifo "$TEMPDIR/fifo1";
+mkfifo "$TEMPDIR/fifo2";
 
 if ! is_unlocked; then
 	error "You're already running an instanced of apt-user, or your" \

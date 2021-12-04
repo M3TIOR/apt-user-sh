@@ -29,6 +29,12 @@
 
 abrt() { error "Error in '$SELF': $*"; exit 1; }
 
+default_env_path()
+(
+	. /etc/environment;
+	echo "$PATH";
+)
+
 # @describe - Prints the simplest primitive type of a value.
 # @usage - typeof [-g] VALUE
 # @param "-g" - Toggles the numerical return values which increase in order of inclusivity.
@@ -244,23 +250,11 @@ pseudochroot()
 	# Since this is in a subshell, to be exclusive, just empty the variable
 	# before filling it.
 	if test -z "$INCLUSIVE"; then PATH=''; fi;
-	while read line; do
-		# The sysadmin shouldn't put a lowercase PATH in, because posix
-		# environment variables are case sensitive.
-		VAR=${line%=*}; if test "$VAR" = "PATH"; then
-			# Trim off useless garbage.
-			line=${line#*=}; line=${line#\"}; line=${line%\"};
-			OIFS="$IFS";
-			IFS=":";
-			for p in $line; do
-				PATH="$PATH:$NEWROOT/$p";
-			done;
-			IFS="$OIFS";
-			PATH="$PATH:$NEWROOT";
-			PATH=${PATH#:}; # Remove the unnecessary prefix in a post process.
-		fi;
-
-	done < /etc/environment
+	for p in $(. /etc/environment; IFS=":"; echo "$PATH"); do
+		PATH="$PATH:$NEWROOT/$p";
+	done;
+	PATH="$PATH:$NEWROOT";
+	PATH=${PATH#:}; # Remove the unnecessary prefix in a post process.
 
 	# Don't forget to add user's binaries.
 	if test -d "$HOME/.local/bin"; then
@@ -282,9 +276,9 @@ pseudochroot()
 	OLD_LD_P="$(get_ld_library_paths | tr '\n' ':')"; OLD_LD_P="${OLD_LD_P#.:}";
 	if test -n "$INCLUSIVE"; then LD_LIBRARY_PATH="$OLD_LD_P"; fi;
 
-	OIFS="$IFS"; IFS=":"; for p in $OLD_LD_P; do
+	for p in $(IFS=":"; echo "$OLD_LD_P"); do
 		LD_LIBRARY_PATH="$NEWROOT/$p:$LD_LIBRARY_PATH";
-	done; IFS="$OIFS";
+	done;
 
 	OLD_LD_P="${OLD_LD%:}";
 
