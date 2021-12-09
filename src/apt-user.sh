@@ -87,17 +87,21 @@ containerize()
 			$FAKE_ROOT -r $MOUNT $*;
 )
 
-sanitize_aptget() {
-	local FLAG_ARGS; local POSITIONALS;
+sanitize_aptget()
+(
+	FLAG_ARGS=""; POSITIONALS="";
 	while test "$#" -gt 0; do
 		# The version and help flags override everything else, so we can
 		# exit early, and pass directly to the command.
-		if test "$1" = "--version" || test "$1" = "-v" ||
-		   test "$1" = "--help" || test "$1" = "-h"; then
+		if test "$1" = "--version" \
+		     -o "$1" = "-v" \
+		     -o "$1" = "--help" \
+		     -o "$1" = "-h"; then
 			return 1;
 		fi;
 		if starts_with "$1" "-"; then
-			# None of the apt-get flags take parameters, so this is easy.
+			# None of the apt-get flags take parameters, so this is easy;
+			# that is, they either take no parameter or an equal sign delimited peram.
 			FLAG_ARGS="$FLAG_ARGS $1";
 		else
 			POSITIONALS="$POSITIONALS $1";
@@ -105,9 +109,9 @@ sanitize_aptget() {
 		shift;
 	done;
 
-	# XXX: returning with an empty variable may cause issues.
-	v_return "$FLAG_ARGS" "$POSITIONALS";
-}
+	setsid echo "$FLAG_ARGS" > "$TEMPDIR/fifo1";
+	setsid echo "$POSITIONALS" > "$TEMPDIR/fifo2";
+)
 
 list_packages() {
 	# NOTE: '/var/lib/dpkg/info/' holds information files for all installed
@@ -251,16 +255,52 @@ update_held_packages() {
 	| xargs apt-mark hold >&2;
 }
 
+packages_are()
+(
+	# TODO: default state should be in cache, the -i == installed -u
+	RETURN="";
+
+	case $1 in
+		"installed") shift;
+			for PACKAGE in $*; do
+				if ! -e "$USER_CONTAINER/var/lib/dpkg/info/$PACKAGE.list"; then
+					RETURN="$PACKAGE $RETURN";
+				fi;
+			done;
+		;;
+		"uninstalled") shift;
+			for PACKAGE in $*; do
+				if -e "$USER_CONTAINER/var/lib/dpkg/info/$PACKAGE.list"; then
+					RETURN="$PACKAGE $RETURN";
+				fi;
+			done;
+		;;
+		*)
+			v_return "$1";
+			return 2;
+		;;
+	esac;
+
+	# When we have packages not matching the target state, return them
+	if test -n "$RETURN"; then
+		v_return "$RETURN"; # Should get passed to RETURN1;
+		return 1;
+	fi;
+)
+
+
 update_shims() {
 	#diff "$CHROOT/var/log/dpkg.log" "$APPDATA/dpkg.log.old";
-	for p in $(. /etc/environment; IFS=":"; echo "$PATH"); do
+	info "Info: Missing optional, the 'add-repository' command will be disabled.";
+
+	for p in $(. /etc/environment; IFS=":"; command echo "$PATH"); do
 		basename -a "$CHROOT/$p"/* | {
 			cd "$BINDIR/$p";
-			while read p; do ln -srfT "$APPDATA/shim.sh" "$p"; done;
-			
+			while read p; do ln -srfT "$PROCDIR/shim.sh" "$p"; done;
+
 			cd "$CHROOT/$p";
-			basename -a "$BINDIR/$p"/* > "$TEMPDIR/fifo1" &;
-			basename -a "$CHROOT/$p"/* > "$TEMPDIR/fifo2" &;
+			basename -a "$BINDIR/$p"/* > "$TEMPDIR/fifo1" &
+			basename -a "$CHROOT/$p"/* > "$TEMPDIR/fifo2" &
 			comm -3 "$TEMPDIR/fifo1" "$TEMPDIR/fifo2" | xargs rm -v;
 		};
 	done;
@@ -331,8 +371,10 @@ while test "${#}" -gt 0; do
 	esac;
 	shift;
 done;
+if test -z "$POSTPROC_ARGS"; then print_help; exit 0; fi;
 eval "set $POSTPROC_ARGS";
 COMMAND="$1"; shift;
+
 
 trap "cleanup" 0; # Always cleans up except when KILLed
 
@@ -416,7 +458,7 @@ case "$COMMAND" in
 	'list') dpkg-query --list $*;;
 	'search') apt-cache search $*;;
 	'show') apt-cache show $*;;
-	'upgrade') apt-get upgrade $*;;
+	'upgrade') apt-get upgrade $*; update_shims;;
 	'clean'|'update') apt-get $COMMAND $*;;
 	'install')
 		# NOTE: I want users to be able to install newer packages over
@@ -424,6 +466,7 @@ case "$COMMAND" in
 		#       in the system to their own container, for version isolation when
 		#       desired. --reinstall should allow package isolation,
 		apt-get install $*;
+		update_shims;
 
 		# TODO: check packages for external resources, and  add them to a list
 		#       for which the binaries will be managed with update-alternatives
@@ -446,20 +489,23 @@ case "$COMMAND" in
 		# TODO: maybe consider using apt to resolve the immediate dependencies
 		#       and update those too. But nothing else.
 
-		SEARCH=$USER_CONTAINER/var/lib/dpkg/info/*.list;
-		if ! ends_with "$SEARCH" '*.list'; then
-			for FILEPATH in $SEARCH; do
-				FILENAME="${FILEPATH##*/}";
-				PACKAGES="$PACKAGES ${FILENAME%.list}";
-			done;
+		if sanitize_aptget $*; then
+			FLAGS="$(cat "$TEMPDIR/fifo1")";
+			PACKAGES="$(cat "$TEMPDIR/fifo2")";
+			# TODO: maybe process packages as an error unexpected parameter
+			apt-get upgrade $(basename "$CHROOT/var/lib/dpkg/info"/*.list) $FLAGS;
+		else
+			apt-get "$COMMAND" $*;
 		fi;
 
-		apt-get upgrade $PACKAGES $*;
+		update_shims;
 	;;
 	'purge'|'remove')
 		# TODO: Only remove packages installed within the user chroot
 		if sanitize_aptget $*; then
-			if packages_are installed $RETURN2; then
+			FLAGS="$(cat "$TEMPDIR/fifo1")";
+			PACKAGES="$(cat "$TEMPDIR/fifo2")";
+			if packages_are installed $PACKAGES; then
 				apt-get "$COMMAND" $*;
 			else
 				error "Couldn't find the following packages installed in the" \
@@ -468,6 +514,8 @@ case "$COMMAND" in
 		else
 			apt-get "$COMMAND" $*;
 		fi;
+
+		update_shims;
 	;;
 	'autoremove')
 		# TODO: don't actually call `autoremove`; use conditional `remove`
@@ -479,6 +527,7 @@ case "$COMMAND" in
 		#       when the user has a duplicate package installed in auto mode
 		#       that's also installed by the host.
 		apt-get autoremove $*;
+		update_shims;
 	;;
 
 	'edit-sources')

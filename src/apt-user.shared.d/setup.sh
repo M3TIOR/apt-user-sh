@@ -139,6 +139,6 @@ if test -n "$FD2" -a "$FD2" != "/dev/null" -a "$FD2" != "$LOGFILE.2"; then
 fi;
 
 # XXX: Fixes a racing condition caused by the shared logging setup.
-sleep 0.01;
+sleep 0.05;
 
 trap "setup_cleanup;" 0;

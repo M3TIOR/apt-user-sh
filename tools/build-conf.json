@@ -1,0 +1,38 @@
+{
+	"package": "apt-user-sh",
+	"description": [
+		"A shell script utility to provide multiuser environment support for APT.",
+		"Each user must opt-in to this service by sourcing the apt-user.enable.sh",
+		"script. To find this script, run the following command at your terminal:",
+		"`echo \\\"dirname $(readlink -fc $(type -p apt-user))\\\"/apt-user.enable.sh;`"
+	],
+	"debconf": [
+		{
+			"distro": "ubuntu",
+			"preinst": null,
+			"postinst": [
+				"#!/bin/sh",
+				"HOST=\"/usr/share/apt-user-sh/\";",
+				"update-alternatives --install /usr/bin/apt-user apt-user \"$HOST/apt-user.sh\" 10;",
+				"chmod +x \"$HOST/apt-user.sh\" \"$HOST/shim.sh\" \"$HOST/sync-apt-user.sh\";"
+			],
+			"prerm": [
+				"#!/bin/sh",
+				"update-alternatives apt-user /usr/share/apt-user-sh/apt-user.sh;"
+			],
+			"postrm": null,
+			"version": [
+				{
+					"name": "20.04",
+					"codename": "focal",
+					"dependencies": [ "coreutils (>= 8)" ]
+				},
+				{
+					"name": "18.04",
+					"codename": "bionic",
+					"dependencies": [ "coreutils (>= 8)" ]
+				}
+			]
+		}
+	]
+}

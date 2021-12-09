@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -x
 ###############################################################################
 # Copyright (C) 2015-2021 notify-send.sh authors (see AUTHORS file)
 #
@@ -23,6 +23,7 @@ SELF=$(readlink -n -f "$0");
 PROCDIR="$(dirname "$SELF")";
 APPNAME="$(basename "$SELF")";
 TMP="${XDG_RUNTIME_DIR:-/tmp}";
+PATH="$PROCDIR/.bin:$PATH";
 
 VERSION='';
 
@@ -37,8 +38,6 @@ TARGETS="deb:ubuntu"; # TODO: deb:debian deb:linuxmint
 
 ################################################################################
 ## Functions
-
-echo() { printf "%b\n" "$*"; }
 
 reset_targets() {
 	if $RESET_TARGETS; then
@@ -106,15 +105,25 @@ tokenize_semver_string(){
 	IFS="$OIFS";
 }
 
-generate_build_version() {
-	OIFS="$IFS"; IFS="-";
-	set $(git describe --tag --long);
-	# This is really fucking annoying
-	eval "buildhash=\"\$$(($#))\"";
-	eval "commitsahead=\"\$$(($# - 1))\"";
-	tagversion="${@%-${commitsahead}-${buildhash}}";
-	IFS="$OIFS";
+git_tag_version() {
+	if ! s="$(git describe --tag --long)"; then
+		return 1;
+	else
+		OIFS="$IFS"; IFS="-"; set "$s"; IFS="$OIFS";
+		eval "buildhash=\"\$$(($#))\"";
+		eval "commitsahead=\"\$$(($# - 1))\"";
+		tagversion="${@%-${commitsahead}-${buildhash}}";
+	fi;
+}
 
+generate_build_version() {
+	if ! git_tag_version; then
+		if ! VERSION="$(git rev-parse --short HEAD)"; then
+			VERSION="unknown";
+		fi;
+		VERSION="0.0.0+dev.unknown.$VERSION";
+		return 0;
+	fi;
 	tokenize_semver_string "${tagversion#v}";
 	if $BUILD_RELEASE; then
 		if test -z "$VERSION"; then
@@ -137,101 +146,101 @@ generate_build_version() {
 	fi;
 }
 
-build_package() {
+build_package()
+(
 	FORMAT="$1";
 	DISTRO="$2";
+	DISTRO_VERSION="$3";
+
+	PACKAGE="$(jq -r ".package" "$PROCDIR/build-conf.json")";
 
 	case "$FORMAT" in
 		'deb')
 			echo "Building \".deb\" package for \"$DISTRO\"";
 
-			DEB_ROOT="$TEMPDIR/notify-send-sh_${VERSION}_all";
+			get_distro() { cat "$PROCDIR/build-conf.json" | jq -cM ".debconf[] | select(.distro==\"$DISTRO\")"; };
+			get_version() { get_distro | jq -cM ".version[] | select(.name==\"$DISTRO_VERSION\" // .codename==\"$DISTRO_VERSION\")"; };
+
+			DEB_ROOT="$TEMPDIR/${PACKAGE}_${VERSION}_all";
 			CONTROL_ROOT="$DEB_ROOT/DEBIAN";
 
 			# Make sure all our parent paths exist.
 			mkdir -p "$CONTROL_ROOT";
 
 			{
-				echo 'Package: notify-send-sh';
-				printf "%s\n" "Version: $VERSION";
+				echo "Package: $PACKAGE";
+				echo "Version: $VERSION";
 				echo 'Architecture: all';
 				echo 'Essential: no';
-				echo 'Prioritiy: optional';
+				echo "Priority: optional";
 
-				printf '%s' 'Depends: coreutils (>= 8)';
-				# We have to create separate distro packages because different distros
-				# name their packages differently. Of all the stupid bullshit lol.
-				case "$DISTRO" in
-					# Upon researching into this, installing the `notification-daemon`
-					# package should ensure we have a notification daemon needed to
-					# actually display notifications. Not sure if this is actually
-					# necessary or not, but it's helpful information. Could be good
-					# for developing the test scripts. It's not in use on my system
-					# at the time of writing even though it's installed. Probably
-					# because it's superceeded by the XFCE notification daemon.
-					"ubuntu") echo ", libglib2.0-bin (>= 2)";;
-				esac;
+				echo "Depends: $(get_version | jq -r '.dependencies | join(", ")')";
 
 				echo "Maintainer: $MAINTAINER";
-				printf "%s %s %s\n" \
-					"Description: An alternative CLI Gnome notification client. Intended to" \
-					"be a near drop-in replacement for glib2's notify-send command with" \
-					"more features.";
+				echo "Description: $(
+					jq -r '.description | join(" ")' "$PROCDIR/build-conf.json"
+				)";
 			} >> "$CONTROL_ROOT/control";
+
+			type get_distro;
+			type get_version;
 
 			# NOTE: Can I just say, this security model fucking sucks. WTF were the
 			#       Debian devs thinking? Let's just get this done? Whyyyyyyyyyy
 			#       Ah yes, let's just trust every package to be safe,
 			#       there aren't any mallicious people on the web. It's fiiiiiiine.
+			parse_controlfile() {
+				case "$(get_version | jq -r ".$1 | type")" in
+					"string") get_version | jq -r ".$1" >> "$CONTROL_ROOT/$1";;
+					"array") get_version | jq -r ".$1 | join(\"\n\")" >> "$CONTROL_ROOT/$1";;
+					*)
+						case "$(get_distro | jq -r ".$1 | type" )" in
+							"string") get_distro | jq -r ".$1" >> "$CONTROL_ROOT/$1";;
+							"array") get_distro | jq -r ".$1 | join(\"\n\")" >> "$CONTROL_ROOT/$1";;
+						esac;
+					;;
+				esac;
+				if test -e "$CONTROL_ROOT/$1"; then
+					chmod 755 "$CONTROL_ROOT/$1";
+				fi;
+			}
 
-			# {} >> "$CONTROL_ROOT/preinst";
-			{
-				echo '#!/bin/sh';
-				# TODO: make sure this configures properly when notify alt already exists
-				#       should eventually act as alternative for notify-send native.
-				# echo 'update-alternatives' '--install /usr/bin/notify' 'notify'\
-				#          '/opt/notify-send-sh/notify-send.sh' '80;';
-				echo "{";
-				echo "	cd /usr/bin;";
-				echo "	ln -s /opt/notify-send-sh/notify-send.sh;";
-				echo "	ln -s /opt/notify-send-sh/notify-exec.sh;";
-				echo "}";
-			} >> "$CONTROL_ROOT/postinst";
-
-			# {} >> "$CONTROL_ROOT/prerm";
-			{
-				echo '#!/bin/sh';
-				# TODO: remove this from the alternatives
-				echo "{";
-				echo "	cd /usr/bin;";
-				echo "	rm notify-send.sh notify-exec.sh;";
-				echo "}";
-			} >> "$CONTROL_ROOT/postrm";
-
-
-			#chmod 755 "$CONTROL_ROOT/preinst";
-			chmod 755 "$CONTROL_ROOT/postinst";
-			#chmod 755 "$CONTROL_ROOT/prerm";
-			chmod 755 "$CONTROL_ROOT/postrm";
+			parse_controlfile "preinst";
+			parse_controlfile "postinst";
+			parse_controlfile "prerm";
+			parse_controlfile "postrm";
 
 			#mkdir -p "${DEB_ROOT}/usr/local/bin";
-			mkdir -p "${DEB_ROOT}/opt/notify-send-sh";
-			cp -a -t "${DEB_ROOT}/opt/notify-send-sh" "$PROCDIR/../src/"*;
+			mkdir -p "${DEB_ROOT}/usr/share/$PACKAGE";
+			cp -a -t "${DEB_ROOT}/usr/share/$PACKAGE" "$PROCDIR/../src/"*;
 
 			dpkg-deb \
 				--build "$DEB_ROOT" \
-				"$PROCDIR/../build/notify-send-sh_v${VERSION}_${DISTRO}.deb";
+				"$PROCDIR/../build/${PACKAGE}_v${VERSION}_${DISTRO}.deb";
 		;;
 	esac;
-}
+)
 
 ################################################################################
 ## Main Script
 
+if ! type jq 1>/dev/null; then
+	# The only package that needs to be latest is shellcheck because it provides
+	# protection of our sourcecode. As much as I'd like to have both sources
+	# hash validated to eliminate the MiM risk vector, I can't for all systems.
+	# Neither package author provides checksums.
+	echo "Fetching jq...";
+	curl -L --progress-bar \
+		-o "$PROCDIR/.bin/jq" \
+		"https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64";
+
+	chmod +x "$PROCDIR/.bin/jq";
+fi;
+
 while test "$#" -gt 0; do
 	case "$1" in
 		-h|--help)
-			echo 'Usage: build.sh [-hum] [-r [VERSION]] [-t "FORMAT:DISTRO" [-t ...]]';
+			echo 'Usage: build.sh [-hum] [-r [VERSION]] [-t "FORMAT:DISTRO[:VERSION]" [-t ...]]';
 			echo 'Description:';
 			echo '\tBuild automation for notify-send-sh. By default builds all';
 			echo '\tpackages for all distros. When a single option is specified,';
@@ -259,7 +268,7 @@ while test "$#" -gt 0; do
 			BUILD_RELEASE='true';
 		;;
 		-t|--target|--target=*)
-			if test "$1" != "${1#--release=}"; then s="${1#*=}"; else shift; s="$1"; fi;
+			if test "$1" != "${1#--target=}"; then s="${1#*=}"; else shift; s="$1"; fi;
 			reset_targets;
 			TARGETS="$TARGETS $s";
 		;;
@@ -269,16 +278,15 @@ while test "$#" -gt 0; do
 		;;
 		--list-targets)
 			echo "Supported Targets:";
-			echo "\tubuntu";
-			# TODO:
-			#echo "\tdebian";
-			#echo "\tlinuxmint";
+			jq '.debconf[].distro' "$PROCDIR/build-conf.json";
+			exit;
 		;;
 		--list-formats)
 			echo "Supported Formats:";
 			echo "\tdeb";
 			# TODO:
 			#echo "\trpm";
+			exit;
 		;;
 	esac;
 	shift;
@@ -299,9 +307,7 @@ TEMPDIR="$(mktemp -p "$TMP" -d "notify-send-sh_build.XXX")";
 trap "rm -rvf $TEMPDIR" 0;
 
 for format_distro in $TARGETS; do
-	OIFS="$IFS"; IFS=":";
-	build_package $format_distro;
-	IFS="$OIFS";
+	build_package $(IFS=":"; echo $format_distro);
 done;
 
 # Hash generation and signing

@@ -77,10 +77,14 @@ e553d8219517542a4dbbaee02757af2()
 		alias unionfs-fuse="pseudochroot -i -a $APPDATA/fuse.pid $CHROOT unionfs-fuse -d -o debug";
 	fi;
 
-	if ! UID="$(id -u)"; then
-		error "Failed to fetch UID of caller." \
-					"Running 'chmod u+x {this_script}' should fix this.";
-	fi;
+	case "$(basename "$SHELL")" in
+		"bash"):;; # Passes for all shells that preprocess UID into existence
+		*)
+			if ! UID="$(id -u)"; then
+				error "Failed to fetch UID of caller." \
+							"Running 'chmod u+x {this_script}' should fix this.";
+			fi;;
+	esac;
 
 	# Make sure we have a mountpoint to load up.
 	mkdir -p "$MOUNT";
