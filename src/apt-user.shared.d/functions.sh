@@ -227,11 +227,11 @@ pseudochroot()
 	INCLUSIVE=''; ASYNC=''; EMULATE_TYPE='';
 	NEWROOT=''; PROGRAM='';
 
-	while getopts iat option; do
+	while getopts 'ia:t' option; do
 		case "$option" in
-			i) INCLUSIVE="1";;
-			a) ASYNC="$OPTARG";;
-			t) EMULATE_TYPE="1";;
+			'i') INCLUSIVE="1";;
+			'a') ASYNC="$OPTARG";;
+			't') EMULATE_TYPE="1";;
 		esac;
 	done;
 
@@ -250,7 +250,7 @@ pseudochroot()
 	# Since this is in a subshell, to be exclusive, just empty the variable
 	# before filling it.
 	if test -z "$INCLUSIVE"; then PATH=''; fi;
-	for p in $(. /etc/environment; IFS=":"; echo "$PATH"); do
+	for p in $(. /etc/environment; IFS=":"; command echo $PATH); do
 		PATH="$PATH:$NEWROOT/$p";
 	done;
 	PATH="$PATH:$NEWROOT";
@@ -276,7 +276,7 @@ pseudochroot()
 	OLD_LD_P="$(get_ld_library_paths | tr '\n' ':')"; OLD_LD_P="${OLD_LD_P#.:}";
 	if test -n "$INCLUSIVE"; then LD_LIBRARY_PATH="$OLD_LD_P"; fi;
 
-	for p in $(IFS=":"; echo "$OLD_LD_P"); do
+	for p in $(IFS=":"; echo $OLD_LD_P); do
 		LD_LIBRARY_PATH="$NEWROOT/$p:$LD_LIBRARY_PATH";
 	done;
 
@@ -309,13 +309,14 @@ pseudochroot()
 
 		return "$?";
 	else
-		# NOTE: uses setsid instead of "&" shell async, because "&" leaves a
-		#       dangling shell PID which would lock up our `.profile`.
+		# NOTE: In spite of previous bad advice, in POSIX shell, & does not
+		#       block pid destruction, and is better than using the setsid utility.
+		#       Nor does it do so in Bash, so IDFK what bkw777 was talking about,
+		#       but this has me a little bit peeved.
 		PATH="$PATH" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" LIBRARY_PATH="$LIBRARY_PATH" \
 		CPATH="$CPATH" PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
-		setsid "$PROGRAM" $*;
+		command "$PROGRAM" $* & PID="$!";
 
-		PID="$!";
 		echo "$PID" > "$ASYNC";
 		return 0;
 	fi;

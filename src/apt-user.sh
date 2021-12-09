@@ -27,7 +27,7 @@
 ################################################################################
 ## Globals
 
-SELF=$(readlink -n -f "$0");
+SELF=$(readlink -nf "$0");
 PROCDIR="$(dirname "$SELF")";
 APPNAME="$(basename "$SELF")";
 TMP="${XDG_RUNTIME_DIR:-/tmp}";
@@ -44,8 +44,9 @@ VERBOSE=${VERBOSE-2}; # NOTE: this is assinging a default of 2, not subtracting.
 # NOTE: should always run upon exit because we have a temp dir to clean up.
 cleanup() {
 	# Make sure the unionfs is down, then remove the container.
-	info "Running cleanup script...";
+	info "Cleaning up loose ends.";
 	rm -rf "$TEMPDIR";
+	info "DONE";
 }
 
 # @brief - Executes the passed executable and arguments within a 100%
@@ -141,6 +142,31 @@ list_packages() {
 	esac;
 }
 
+ensure()
+(
+	OPTARG=''; OPTIND=0;
+	ENSURE_FILE=''; VERBOSE='';
+
+	while getopts fv option; do
+		case "$option" in
+			'f') ENSURE_FILE=1;;
+			'v') VERBOSE=1;;
+		esac;
+	done;
+
+	shift "$(($OPTIND-1))";
+
+	for ARG in $*; do
+		if test -z "$ENSURE_FILE"; then
+			mkdir -p "$ARG" && echo "created directory '$ARG'";
+		else
+			mkdir -p "${ARG%/*}";
+			# Assume on error, touch or mkdir will throw an error for us.
+			touch "$ARG" && test -n "$VERBOSE" && echo "created file '$ARG'";
+		fi;
+	done;
+)
+
 packages_for() {
 	# This invokes a subshell anyway, so don't need to pad the outside with one.
 	# Holy $H!T doing a loop of `dpkg -S` invocations cost 0.33 seconds of init
@@ -172,13 +198,12 @@ is_unlocked()
 			#      between the next `ps` call and lslocks' capture value. If the process
 			#      is gone, ps will break the result with an unhandled error.
 			LOCKUID=`ps -o uid= -p ${LOCKINFO#* }`;
-			if test "$LOCKUID" -ne 0 && test "$LOCKUID" -ne $UID; then
+			if test "$LOCKUID" -eq 0 || test "$LOCKUID" -eq "$UID"; then
 				return 1;
 			fi;
-
 		done;
 	}
-	wait "$LOCKPID";
+	#wait "$LOCKPID";
 )
 
 is_unionfs_mounted(){
@@ -190,6 +215,8 @@ is_unionfs_mounted(){
 		-t fuse.unionfs \
 		-t fuse \
 		"$MOUNT" 1>/dev/null 2>/dev/null;
+
+	# TODO: ensure the correct process is what's mounting the directory.
 }
 
 sync_control_file() {
@@ -290,8 +317,7 @@ packages_are()
 
 
 update_shims() {
-	#diff "$CHROOT/var/log/dpkg.log" "$APPDATA/dpkg.log.old";
-	info "Info: Missing optional, the 'add-repository' command will be disabled.";
+	warning "Updating shims, finalizing action.";
 
 	for p in $(. /etc/environment; IFS=":"; command echo "$PATH"); do
 		basename -a "$CHROOT/$p"/* | {
@@ -343,6 +369,8 @@ print_help(){
 	echo "\tupgrade        - upgrade the system by installing/upgrading packages";
 	echo "\tfull-upgrade   - upgrade the system by removing/installing/upgrading";
 	echo "\tedit-sources   - edit the source information file";
+	echo "\tenable         - enable the use of the apt-user environment for the";
+	echo "\t                 current user, and print the updated PATH.";
 	echo;
 	echo "QOL APT_COMMANDs added by yours truely:";
 	echo "\tadd-repository - calls add-apt-repository for this user";
@@ -392,6 +420,7 @@ alias apt-mark="containerize -R apt-cache";
 # NOTE: adjusts apt-get to supress Autoremove warnings.
 # TODO: implement local AUTOREMOVE eligibility notification.
 alias apt-get="containerize -R apt-get -o APT::Get::HideAutoRemove=1";
+unionfs_fuse(){ pseudochroot -i -a "$APPDATA/fuse.pid" "$CHROOT" unionfs-fuse $*; };
 
 # Executes at debug verbosity.
 if test $VERBOSE -gt 3; then
@@ -400,10 +429,9 @@ if test $VERBOSE -gt 3; then
 	alias cp="cp -v";
 	alias mkdir="mkdir -v";
 	alias readlink="readlink -v";
+	alias ensure="ensure -v";
 
-	# OLDFLAGS
-	#BVF="-v";
-	#USV="-d -o debug";
+	unionfs_fuse(){ pseudochroot -i -a "$APPDATA/fuse.pid" "$CHROOT" unionfs-fuse -d -o debug $*; };
 fi;
 
 # Silly verbosity
@@ -414,137 +442,174 @@ if test $VERBOSE -gt 4; then
 fi;
 
 
-if ! type add-apt-repository >&6; then
-	info "Info: Missing optional, the 'add-repository' command will be disabled.";
+if ! type add-apt-repository 1>&6 2>&6; then
+	info "Missing optional, the 'add-repository' command will be disabled.";
 fi;
 
 if ! UID="$(id -u)"; then
-	error "Error: Failed to fetch UID of caller.";
-	error "       Running 'chmod u+x {this_script}' should fix this.";
+	error "Failed to fetch UID of caller." \
+	      "Running 'chmod u+x {this_script}' should fix this.";
 fi;
 
 
-mkdir -p "$APPDATA";
-mkdir -p "$CHROOT";
-mkfifo "$TEMPDIR/fifo1";
-mkfifo "$TEMPDIR/fifo2";
+mkdir -p "$APPDATA" 1>&6 2>&6;
+mkdir -p "$MOUNT" 1>&6 2>&6;
+mkfifo "$TEMPDIR/fifo1" 1>&6 2>&6;
+mkfifo "$TEMPDIR/fifo2" 1>&6 2>&6;
 
-if ! is_unlocked; then
-	error "You're already running an instanced of apt-user, or your" \
-	      "sysadmin is running an apt command and the root is locked." \
-	      "Try again later when that has finished.";
-	exit 100;
+if ! test -d "$CHROOT"; then
+	info "Initializing new container...";
+	mkdir -p "$CHROOT" 1>&6;
+
+	# NOTE: should only make DPKG and the APT suite useable.
+	ensure -f \
+		"$CHROOT/var/lib/dpkg/lock" \
+		"$CHROOT/var/lib/dpkg/lock-frontend" \
+		"$CHROOT/var/lib/dpkg/triggers/Lock" \
+		"$CHROOT/var/lib/apt/lists/lock" \
+		"$CHROOT/var/cache/apt/lock" \
+		"$CHROOT/var/cache/apt/archives/lock" \
+		"$CHROOT/var/cache/debconf/passwords.dat" 1>&6 2>&6;
+
+	# NOTE: essential folders also need to be initialized, to correctly set
+	#       the file ownership and privilage metadata.
+	ensure \
+		"$CHROOT/var/lib/dpkg/info" \
+		"$CHROOT/var/lib/apt/lists/partial" \
+		"$CHROOT/var/cache/apt/archives/partial" 1>&6 2>&6;
+
+	cp "/var/lib/dpkg/status" "$CHROOT/var/lib/dpkg/status" 1>&6;
 fi;
 
-warning "Syncing 'dpkg' control files.";
-if sync_control_file; then
-	warning "Updating held packages.";
-	if ! update_held_packages; then
-		warning "Couldn't update held packages; bloat may be installed " \
-		        "in this state. For more info see 'VERBOSE=4 apt-local ...'";
+if is_unionfs_mounted; then
+	if ! is_unlocked; then
+		error "You're already running an instanced of apt-user, or your" \
+		      "sysadmin is running an apt command and the root is locked." \
+		      "Try again later when that has finished.";
+		exit 100;
 	fi;
+
+	warning "Syncing 'dpkg' control files.";
+	if sync_control_file; then
+		warning "Updating held packages.";
+		if ! update_held_packages; then
+			warning "Couldn't update held packages; bloat may be installed " \
+			        "in this state. For more info see 'VERBOSE=4 apt-local ...'";
+		fi;
+	fi;
+
+	warning "Double checking for broken packages introduced by the sysadmin...";
+	apt-get install -q --fix-broken --yes >&5;
+	if ! test "$?" -eq 0; then
+		error "Couldn't fix broken packages, run 'VERBOSE=4 apt-local ...'" \
+		      "for more information and consider submitting a bug report.";
+	fi;
+
+	case "$COMMAND" in
+		# TODO: if I can't only list packages with updates from the user container,
+		#       then don't list any at all.
+		'list') dpkg-query --list $*; exit;;
+		'search') apt-cache search $*; exit;;
+		'show') apt-cache show $*; exit;;
+		'upgrade') apt-get upgrade $*; update_shims; exit;;
+		'clean'|'update') apt-get $COMMAND $*; exit;;
+		'install')
+			# NOTE: I want users to be able to install newer packages over
+			#       unmaintained system packages / copy existing packages installed
+			#       in the system to their own container, for version isolation when
+			#       desired. --reinstall should allow package isolation,
+			apt-get install $*;
+			update_shims;
+			exit;
+
+			# TODO: check packages for external resources, and  add them to a list
+			#       for which the binaries will be managed with update-alternatives
+			#       so they can automatically be run within the chroot.
+			#       This will remove the need to have the exec function at all
+			#       and reduce the need for advanced user intervention.
+		;;
+		'full-upgrade')
+			# NOTE: I want this to differ from the system full-upgrade, as
+			#       a full upgrade to the user's container, shouldnt' involve any
+			#       upgrades of system packages unrelated to packages installed
+			#       within the user container. This needs to only upgrade packages
+			#       directly in the user container, and depended upon by the user
+			#       container.
+			#
+			#       If users want to update system packages, they can do so
+			#       explicitly using 'upgrade'. Otherwise this could cause
+			#       unnecessary bloat.
+			#
+			# TODO: maybe consider using apt to resolve the immediate dependencies
+			#       and update those too. But nothing else.
+
+			if sanitize_aptget $*; then
+				FLAGS="$(cat "$TEMPDIR/fifo1")";
+				PACKAGES="$(cat "$TEMPDIR/fifo2")";
+				# TODO: maybe process packages as an error unexpected parameter
+				apt-get upgrade $(basename "$CHROOT/var/lib/dpkg/info"/*.list) $FLAGS;
+			else
+				apt-get "$COMMAND" $*;
+			fi;
+
+			update_shims;
+			exit;
+		;;
+		'purge'|'remove')
+			# TODO: Only remove packages installed within the user chroot
+			if sanitize_aptget $*; then
+				FLAGS="$(cat "$TEMPDIR/fifo1")";
+				PACKAGES="$(cat "$TEMPDIR/fifo2")";
+				if packages_are installed $PACKAGES; then
+					apt-get "$COMMAND" $*;
+				else
+					error "Couldn't find the following packages installed in the" \
+					      "user container -> $RETURN1";
+				fi;
+			else
+				apt-get "$COMMAND" $*;
+			fi;
+
+			update_shims;
+			exit;
+		;;
+		'autoremove')
+			# TODO: don't actually call `autoremove`; use conditional `remove`
+			#       to only remove packages installed within the chroot
+			#       DO use `autoremove` as a resolver to find which packages are
+			#       eligable for removal.
+			#
+			# NOTE: There's technically a new type of autoremove eligable file here
+			#       when the user has a duplicate package installed in auto mode
+			#       that's also installed by the host.
+			apt-get autoremove $*;
+			update_shims;
+			exit;
+		;;
+		'edit-sources')
+			# Shouldn't need root to access the sources file.
+			if test -n "$EDITOR"; then
+				containerize $EDITOR /etc/apt/sources.list; exit $RETURN;
+			elif type editor >&6; then
+				# There may be a dpkg managed editor link using update-alternatives.
+				containerize editor /etc/apt/sources.list;
+			else
+				echo "Error: Couldnt' find a suitable editor to edit the apt sources.";
+				exit 1;
+			fi;
+			exit;
+		;;
+	esac;
 fi;
 
-warning "Double checking for broken packages introduced by the sysadmin...";
-apt-get install -q --fix-broken --yes >&5;
-if ! test "$?" -eq 0; then
-	error "Couldn't fix broken packages, run 'VERBOSE=4 apt-local ...'" \
-	      "for more information and consider submitting a bug report.";
-fi;
+# TODO: maybe add user update-alternatives functionality to improve binary compat.
 
 case "$COMMAND" in
-	# TODO: if I can't only list packages with updates from the user container,
-	#       then don't list any at all.
-	'list') dpkg-query --list $*;;
-	'search') apt-cache search $*;;
-	'show') apt-cache show $*;;
-	'upgrade') apt-get upgrade $*; update_shims;;
-	'clean'|'update') apt-get $COMMAND $*;;
-	'install')
-		# NOTE: I want users to be able to install newer packages over
-		#       unmaintained system packages / copy existing packages installed
-		#       in the system to their own container, for version isolation when
-		#       desired. --reinstall should allow package isolation,
-		apt-get install $*;
-		update_shims;
-
-		# TODO: check packages for external resources, and  add them to a list
-		#       for which the binaries will be managed with update-alternatives
-		#       so they can automatically be run within the chroot.
-		#       This will remove the need to have the exec function at all
-		#       and reduce the need for advanced user intervention.
+	'list'|'search'|'show'|'upgrade'|'clean'|'update'|'install'|'full-upgrade'|\
+	'purge'|'remove'|'autoremove'|'edit-sources')
+		error "the user environment isn't loaded yet," \
+		      "load it by calling 'apt-user enable'";
 	;;
-	'full-upgrade')
-		# NOTE: I want this to differ from the system full-upgrade, as
-		#       a full upgrade to the user's container, shouldnt' involve any
-		#       upgrades of system packages unrelated to packages installed
-		#       within the user container. This needs to only upgrade packages
-		#       directly in the user container, and depended upon by the user
-		#       container.
-		#
-		#       If users want to update system packages, they can do so
-		#       explicitly using 'upgrade'. Otherwise this could cause
-		#       unnecessary bloat.
-		#
-		# TODO: maybe consider using apt to resolve the immediate dependencies
-		#       and update those too. But nothing else.
-
-		if sanitize_aptget $*; then
-			FLAGS="$(cat "$TEMPDIR/fifo1")";
-			PACKAGES="$(cat "$TEMPDIR/fifo2")";
-			# TODO: maybe process packages as an error unexpected parameter
-			apt-get upgrade $(basename "$CHROOT/var/lib/dpkg/info"/*.list) $FLAGS;
-		else
-			apt-get "$COMMAND" $*;
-		fi;
-
-		update_shims;
-	;;
-	'purge'|'remove')
-		# TODO: Only remove packages installed within the user chroot
-		if sanitize_aptget $*; then
-			FLAGS="$(cat "$TEMPDIR/fifo1")";
-			PACKAGES="$(cat "$TEMPDIR/fifo2")";
-			if packages_are installed $PACKAGES; then
-				apt-get "$COMMAND" $*;
-			else
-				error "Couldn't find the following packages installed in the" \
-				      "user container -> $RETURN1";
-			fi;
-		else
-			apt-get "$COMMAND" $*;
-		fi;
-
-		update_shims;
-	;;
-	'autoremove')
-		# TODO: don't actually call `autoremove`; use conditional `remove`
-		#       to only remove packages installed within the chroot
-		#       DO use `autoremove` as a resolver to find which packages are
-		#       eligable for removal.
-		#
-		# NOTE: There's technically a new type of autoremove eligable file here
-		#       when the user has a duplicate package installed in auto mode
-		#       that's also installed by the host.
-		apt-get autoremove $*;
-		update_shims;
-	;;
-
-	'edit-sources')
-		# Shouldn't need root to access the sources file.
-		if test -n "$EDITOR"; then
-			containerize $EDITOR /etc/apt/sources.list; exit $RETURN;
-		elif type editor >&6; then
-			# There may be a dpkg managed editor link using update-alternatives.
-			containerize editor /etc/apt/sources.list;
-		else
-			echo "Error: Couldnt' find a suitable editor to edit the apt sources.";
-			exit 1;
-		fi;
-	 ;;
-
-	# TODO: maybe add user update-alternatives functionality to improve binary compat.
-
 	'has-installed')
 		# TODO: test automate check all packages in argument list.
 		# NOTE: this is currently unfinished, it doesn't yet exclude system packages.
@@ -554,9 +619,38 @@ case "$COMMAND" in
 			exit 0;
 		fi;
 	;;
+	'enable')
+		# TODO: print all logged info to stderr, shove PATH to STDOUT
+
+		# TODO: test if unionfs-fuse is started before instantiating a new one.
+		read PID < "$APPDATA/fuse.pid";
+		if ! test -e "/proc/$PID/status" && ! is_unionfs_mounted; then
+			info "Starting UnionFS FUSE";
+			# NOTE: the following parameters seem to have permissions issues
+			#       -o max_files=16000 \
+			unionfs_fuse \
+				-o fsname=apt-local \
+				-o auto_unmount \
+				-o cow \
+				-o big_writes \
+				-o hard_remove \
+				-f \
+				"$CHROOT=RW:/=RO" \
+				"$MOUNT" 1> "$APPDATA/fuse.log" 2> "$APPDATA/fuse.log";
+		fi;
+
+		for p in $(. /etc/environment; IFS=":"; command echo $PATH); do
+			mkdir -p "$BINDIR/$p" >&2;
+			NEWPATH="$NEWPATH:$BINDIR/$p";
+		done;
+		NEWPATH=${NEWPATH#:}; # Remove the prefix in a post process.
+
+		warning "the following should be appended to the beginning of your PATH:";
+		echo "$NEWPATH";
+	;;
 	*) # everything else throws an error to the user.
 		error "'$COMMAND' is not an appropriate command for this script." \
-		      "See 'apt-local --help' for a list of appropriate commands."
+		      "See 'apt-user --help' for a list of appropriate commands."
 		return 1;
 	;;
 esac;
