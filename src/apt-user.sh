@@ -65,7 +65,7 @@ containerize()
 
 	while getopts R option; do
 		case "$option" in
-			R) FAKE_ROOT="-0";;
+			R) FAKE_ROOT="-0 -i 0:$UID";;
 		esac;
 	done;
 
@@ -76,16 +76,20 @@ containerize()
 	# XXX: Unfortunately apt and apt-get force require root for installing
 	#      packages. I wanted this to be done without even faking root,
 	#      so there wouldn't be any issues with file permissions down the road.
+	#
+	# NOTE: Must mount triggers folder to suppress system-level triggers and
+	#       whitelist user installed package triggers.
 	proot \
-			-b "/etc/host.conf" \
-			-b "/etc/hosts" \
-			-b "/etc/nsswitch.conf" \
 			-b "/dev/" \
 			-b "/sys/" \
 			-b "/proc/" \
 			-b "/tmp/" \
+			-b "/run/" \
 			-b "$HOME" \
-			$FAKE_ROOT -r $MOUNT $*;
+			-b "$CHROOT/var/log":"/var/log" \
+			-b "$CHROOT/var/lib/dpkg/updates":"/var/lib/dpkg/updates" \
+			-b "$CHROOT/var/lib/dpkg/triggers":"/var/lib/dpkg/triggers" \
+			$FAKE_ROOT -r $MOUNT $* > "$(readlink -fn /proc/$$/fd/0)";
 )
 
 sanitize_aptget()
@@ -110,8 +114,8 @@ sanitize_aptget()
 		shift;
 	done;
 
-	setsid echo "$FLAG_ARGS" > "$TEMPDIR/fifo1";
-	setsid echo "$POSITIONALS" > "$TEMPDIR/fifo2";
+	echo "$FLAG_ARGS" > "$TEMPDIR/fifo1" &
+	echo "$POSITIONALS" > "$TEMPDIR/fifo2" &
 )
 
 list_packages() {
@@ -176,7 +180,7 @@ packages_for() {
 			find "$1" -follow ! -type d -print; shift;
 		done;
 	} | \
-	xargs dpkg -S 2>/dev/null | \
+	xargs dpkg -S | \
 	grep -P -o '.*(?=:)' | \
 	sort -u -;
 }
@@ -240,7 +244,7 @@ sync_control_file() {
 	# comparatively speaking, and it's on fewer systems. But unfortunately
 	# JQ seems to be a real piece of work and this is the fastest solution
 	# I have for now.
-	ARCH="$(dpkg --print-architecture)" \
+	ARCH="$(command -p dpkg --print-architecture)" \
 	TEMPDIR="$TEMPDIR" \
 	CHROOT="$CHROOT" \
 	APPDATA="$APPDATA" \
@@ -279,7 +283,7 @@ update_held_packages() {
 			true;
 		fi;
 	} \
-	| xargs apt-mark hold >&2;
+	| xargs apt_mark hold >&2;
 }
 
 packages_are()
@@ -319,16 +323,19 @@ packages_are()
 update_shims() {
 	warning "Updating shims, finalizing action.";
 
-	for p in $(. /etc/environment; IFS=":"; command echo "$PATH"); do
-		basename -a "$CHROOT/$p"/* | {
-			cd "$BINDIR/$p";
-			while read p; do ln -srfT "$PROCDIR/shim.sh" "$p"; done;
+	for p in $(. /etc/environment; IFS=":"; command echo $PATH); do
+		mkdir -p "$CHROOT/$p";
+		if test -n "$(ls -A "$CHROOT/$p")"; then
+			basename -a "$CHROOT/$p"/* | {
+				cd "$BINDIR/$p";
+				while read p2; do ln -srfT "$PROCDIR/shim.sh" "$p2"; done;
 
-			cd "$CHROOT/$p";
-			basename -a "$BINDIR/$p"/* > "$TEMPDIR/fifo1" &
-			basename -a "$CHROOT/$p"/* > "$TEMPDIR/fifo2" &
-			comm -3 "$TEMPDIR/fifo1" "$TEMPDIR/fifo2" | xargs rm -v;
-		};
+				basename -a "$BINDIR/$p"/* > "$TEMPDIR/fifo1" &
+				basename -a "$CHROOT/$p"/* > "$TEMPDIR/fifo2" &
+				cd "$CHROOT/$p";
+				comm -3 "$TEMPDIR/fifo1" "$TEMPDIR/fifo2" | xargs rm -fv;
+			};
+		fi;
 	done;
 }
 
@@ -413,13 +420,16 @@ for FD in `seq 6 -1 $((VERBOSE+3))`; do
 	eval "exec $FD>/dev/null";
 done;
 
-alias proot="pseudochroot -i $CHROOT proot -v $((VERBOSE-5))";
-alias lslocks="pseudochroot -i $CHROOT lslocks";
-alias apt-mark="containerize -R apt-mark";
-alias apt-mark="containerize -R apt-cache";
+
+# NOTE: Use functions, not aliases; aliases don't pass through subshells.
+apt_mark(){ containerize -R apt-mark $*; };
+apt_cache(){ containerize -R apt-cache $*; };
 # NOTE: adjusts apt-get to supress Autoremove warnings.
 # TODO: implement local AUTOREMOVE eligibility notification.
-alias apt-get="containerize -R apt-get -o APT::Get::HideAutoRemove=1";
+apt_get(){ containerize -R apt-get -o APT::Get::HideAutoRemove=1 $*; };
+lslocks(){ pseudochroot -i $CHROOT lslocks $*; };
+dpkg(){ containerize -R dpkg $*; };
+proot(){ pseudochroot -i "$CHROOT" proot -v "$((VERBOSE-7))" $*; };
 unionfs_fuse(){ pseudochroot -i -a "$APPDATA/fuse.pid" "$CHROOT" unionfs-fuse $*; };
 
 # Executes at debug verbosity.
@@ -463,6 +473,9 @@ if ! test -d "$CHROOT"; then
 
 	# NOTE: should only make DPKG and the APT suite useable.
 	ensure -f \
+		"$CHROOT/var/log/dpkg.log" \
+		"$CHROOT/var/log/apt/term.log" \
+		"$CHROOT/var/log/apt/history.log" \
 		"$CHROOT/var/lib/dpkg/lock" \
 		"$CHROOT/var/lib/dpkg/lock-frontend" \
 		"$CHROOT/var/lib/dpkg/triggers/Lock" \
@@ -475,14 +488,76 @@ if ! test -d "$CHROOT"; then
 	#       the file ownership and privilage metadata.
 	ensure \
 		"$CHROOT/var/lib/dpkg/info" \
+		"$CHROOT/var/lib/dpkg/updates" \
+		"$CHROOT/var/log" \
+		"$CHROOT/var/log/apt" \
+		"$CHROOT/etc/apt/apt.conf.d/" \
 		"$CHROOT/var/lib/apt/lists/partial" \
 		"$CHROOT/var/cache/apt/archives/partial" 1>&6 2>&6;
 
 	cp "/var/lib/dpkg/status" "$CHROOT/var/lib/dpkg/status" 1>&6;
 fi;
 
-if is_unionfs_mounted; then
-	if ! is_unlocked; then
+if is_unionfs_mounted 2>&6; then
+	info "Configuring APT prerun bootstrap.";
+	{
+		# Ensures paths for target files exist in the chroot before unpacking
+		printf "%s%s %s %s%s\n" \
+			"DPkg::Pre-Install-Pkgs {\"" \
+				"cd $HOME/.local/share/apt-user/root; while read deb; do" \
+					"dpkg-deb --fsys-tarfile \$deb | tar -t | xargs dirname | sort -u | xargs mkdir -pv;" \
+				"done;" \
+			"\"};";
+
+		echo "DPkg::NoTriggers true;";
+		echo "DPkg::TriggersPending false;";
+
+		# Silly verbosity for APT CORE debugging.
+		if test "$VERBOSE" -gt 4; then
+			echo "Debug {";
+			# printf "\t%s\n" "pkgInitConfig \"true\";";
+			# printf "\t%s\n" "pkgProblemResolver \"true\";";
+			# printf "\t%s\n" "pkgProblemResolver::ShowScores \"true\";";
+			# printf "\t%s\n" "pkgDepCache::AutoInstall \"true\";";
+			# printf "\t%s\n" "pkgDepCache::Marker \"true\";";
+			# printf "\t%s\n" "pkgCacheGen \"true\";";
+			printf "\t%s\n" "pkgAcquire \"true\";";
+			printf "\t%s\n" "pkgAcquire::Worker \"true\";";
+			printf "\t%s\n" "pkgAcquire::Auth \"true\";";
+			printf "\t%s\n" "pkgAcquire::Diffs \"true\";";
+			printf "\t%s\n" "pkgDPkgPM \"true\";";
+			printf "\t%s\n" "pkgDPkgProgressReporting \"true\";";
+			printf "\t%s\n" "pkgOrderList \"true\";";
+			printf "\t%s\n" "pkgPackageManager \"true\";";
+			# printf "\t%s\n" "pkgAutoRemove \"true\";";
+			printf "\t%s\n" "BuildDeps \"true\";";
+			printf "\t%s\n" "pkgInitialize \"true\";";
+			# printf "\t%s\n" "NoLocking \"true\";";
+			# printf "\t%s\n" "Acquire::Ftp \"true\";";
+			# printf "\t%s\n" "Acquire::Http \"true\";";
+			# printf "\t%s\n" "Acquire::Https \"true\";";
+			# printf "\t%s\n" "Acquire::gpgv \"true\";";
+			# printf "\t%s\n" "Acquire::cdrom \"true\";";
+			# printf "\t%s\n" "Acquire::Transaction \"true\";";
+			# printf "\t%s\n" "Acquire::Progress \"true\";";
+			# printf "\t%s\n" "aptcdrom \"true\";";
+			# printf "\t%s\n" "IdentCdrom \"true\";";
+			# printf "\t%s\n" "acquire::netrc \"true\";";
+			printf "\t%s\n" "RunScripts \"true\";";
+			printf "\t%s\n" "pkgPolicy \"true\";";
+			printf "\t%s\n" "GetListOfFilesInDir \"true\";";
+			printf "\t%s\n" "pkgAcqArchive::NoQueue \"true\";";
+			# printf "\t%s\n" "Hashes \"true\";";
+			# printf "\t%s\n" "APT::FtpArchive::Clean \"true\";";
+			# printf "\t%s\n" "EDSP::WriteSolution \"true\";";
+			# printf "\t%s\n" "InstallProgress::Fancy \"true\";";
+			printf "\t%s\n" "APT::Progress::PackageManagerFd \"true\";";
+			printf "\t%s\n" "SetupAPTPartialDirectory::AssumeGood \"true\";";
+			echo "};";
+		fi;
+	} > "$CHROOT/etc/apt/apt.conf.d/0000apt-user.conf";
+
+	if ! is_unlocked 2>&6; then
 		error "You're already running an instanced of apt-user, or your" \
 		      "sysadmin is running an apt command and the root is locked." \
 		      "Try again later when that has finished.";
@@ -490,20 +565,20 @@ if is_unionfs_mounted; then
 	fi;
 
 	warning "Syncing 'dpkg' control files.";
-	if sync_control_file; then
+	if sync_control_file 2>&6; then
 		warning "Updating held packages.";
-		if ! update_held_packages; then
+		if ! update_held_packages 2>&6; then
 			warning "Couldn't update held packages; bloat may be installed " \
 			        "in this state. For more info see 'VERBOSE=4 apt-local ...'";
 		fi;
 	fi;
 
-	warning "Double checking for broken packages introduced by the sysadmin...";
-	apt-get install -q --fix-broken --yes >&5;
-	if ! test "$?" -eq 0; then
-		error "Couldn't fix broken packages, run 'VERBOSE=4 apt-local ...'" \
-		      "for more information and consider submitting a bug report.";
-	fi;
+	# warning "Double checking for broken packages introduced by the sysadmin...";
+	# apt-get install -q --fix-broken 1>&6 2>&6;
+	# if ! test "$?" -eq 0; then
+	# 	error "Couldn't fix broken packages, run 'VERBOSE=4 apt-local ...'" \
+	# 	      "for more information and consider submitting a bug report.";
+	# fi;
 
 	case "$COMMAND" in
 		# TODO: if I can't only list packages with updates from the user container,
@@ -512,7 +587,7 @@ if is_unionfs_mounted; then
 		'search') apt-cache search $*; exit;;
 		'show') apt-cache show $*; exit;;
 		'upgrade') apt-get upgrade $*; update_shims; exit;;
-		'clean'|'update') apt-get $COMMAND $*; exit;;
+		'clean'|'update') apt-get  $COMMAND $*; exit;;
 		'install')
 			# NOTE: I want users to be able to install newer packages over
 			#       unmaintained system packages / copy existing packages installed
@@ -557,20 +632,13 @@ if is_unionfs_mounted; then
 		;;
 		'purge'|'remove')
 			# TODO: Only remove packages installed within the user chroot
-			if sanitize_aptget $*; then
-				FLAGS="$(cat "$TEMPDIR/fifo1")";
-				PACKAGES="$(cat "$TEMPDIR/fifo2")";
-				if packages_are installed $PACKAGES; then
-					apt-get "$COMMAND" $*;
-				else
-					error "Couldn't find the following packages installed in the" \
-					      "user container -> $RETURN1";
-				fi;
-			else
+			if packages_are installed $PACKAGES; then
 				apt-get "$COMMAND" $*;
+				update_shims;
+			else
+				error "Couldn't find the following packages installed in the" \
+							"user container.";
 			fi;
-
-			update_shims;
 			exit;
 		;;
 		'autoremove')
@@ -598,6 +666,9 @@ if is_unionfs_mounted; then
 				exit 1;
 			fi;
 			exit;
+		;;
+		'dpkg')
+			dpkg $*;
 		;;
 	esac;
 fi;
@@ -633,7 +704,7 @@ case "$COMMAND" in
 				-o auto_unmount \
 				-o cow \
 				-o big_writes \
-				-o hard_remove \
+				-o atomic_o_trunc \
 				-f \
 				"$CHROOT=RW:/=RO" \
 				"$MOUNT" 1> "$APPDATA/fuse.log" 2> "$APPDATA/fuse.log";
@@ -643,7 +714,7 @@ case "$COMMAND" in
 			mkdir -p "$BINDIR/$p" >&2;
 			NEWPATH="$NEWPATH:$BINDIR/$p";
 		done;
-		NEWPATH=${NEWPATH#:}; # Remove the prefix in a post process.
+		NEWPATH="${NEWPATH#:}"; # Remove the prefix in a post process.
 
 		warning "the following should be appended to the beginning of your PATH:";
 		echo "$NEWPATH";
@@ -651,6 +722,6 @@ case "$COMMAND" in
 	*) # everything else throws an error to the user.
 		error "'$COMMAND' is not an appropriate command for this script." \
 		      "See 'apt-user --help' for a list of appropriate commands."
-		return 1;
+		exit 1;
 	;;
 esac;
