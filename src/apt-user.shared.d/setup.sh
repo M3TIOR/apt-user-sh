@@ -41,6 +41,10 @@ LOGFILE="${LOGFILE:-$TMP/${APPNAME}.$$.log}";
 FD1="$(readlink -n -f /proc/$$/fd/1)";
 FD2="$(readlink -n -f /proc/$$/fd/2)";
 
+if test "$FD1" != "${FD1#/dev/pts/}"; then
+	PTS="${FD1#/dev/pts/}";
+fi;
+
 ################################################################################
 ## Functions
 
@@ -111,9 +115,29 @@ debug() { echo -a 35 "Debug: $@" >&6; }
 # NOTE: This should execute prior to all other code besides global variables
 #       and function definitions.
 
-# Redirect to logfiles.
-exec 1>>"$LOGFILE.1";
-exec 2>>"$LOGFILE.2";
+# Redirect to logfiles; Don't use logfile if piping, otherwise we break
+# the pipe. Pick up the log, redirecting it to the terminal if we have one.
+FD="${FD1##*/}"; FD="${FD%:*}";
+if test "$FD" != "pipe"; then
+	exec 1>>"$LOGFILE.1";
+
+	if test -n "$FD1" -a "$FD1" != "/dev/null" -a "$FD1" != "$LOGFILE.1"; then
+		tail --pid="$$" -f "$LOGFILE.1" >> "$FD1" & trap "kill $!;" 0;
+	fi;
+fi;
+FD="${FD2#*/}"; FD="${FD%:*}";
+if test "$FD" != "pipe"; then
+	exec 2>>"$LOGFILE.2";
+
+	if test -n "$FD2" -a "$FD2" != "/dev/null" -a "$FD2" != "$LOGFILE.2"; then
+		tail --pid="$$" -f "$LOGFILE.2" >> "$FD2" & trap "kill $!;" 0;
+	fi;
+fi;
+
+# XXX: Fixes a racing condition caused by the shared logging setup.
+# NOTE: Yes, this needs to be 100 millis Ruby, don't modify this any lower
+#       or you'll introduce a new bug that takes you hours to solve again.
+sleep 0.1;
 
 # NOTE: Log levels: 0 = silent; 1 = error; 2 = warning; 3 = info; 4 = debug;
 exec 3>&2; exec 4>&2; exec 5>&2; exec 6>&2;
@@ -129,16 +153,5 @@ if test $VERBOSE -gt 4; then # Silly mode
 	set -x;
 	trap "set >&2;" 0;
 fi;
-
-# And this will pick up the log, redirecting it to the terminal if we have one.
-if test -n "$FD1" -a "$FD1" != "/dev/null" -a "$FD1" != "$LOGFILE.1"; then
-	tail --pid="$$" -f "$LOGFILE.1" >> "$FD1" & trap "kill $!;" 0;
-fi;
-if test -n "$FD2" -a "$FD2" != "/dev/null" -a "$FD2" != "$LOGFILE.2"; then
-	tail --pid="$$" -f "$LOGFILE.2" >> "$FD2" & trap "kill $!;" 0;
-fi;
-
-# XXX: Fixes a racing condition caused by the shared logging setup.
-sleep 0.05;
 
 trap "setup_cleanup;" 0;
