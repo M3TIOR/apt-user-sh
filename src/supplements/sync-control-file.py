@@ -250,13 +250,12 @@ def only_user_packages(e):
 		return False
 
 user_entries = filter(only_user_packages, user_status)
-user_entries = dict((obj["Package"],obj) for obj in user_entries)
+user_entries = dict((obj["Package"]+":"+obj["Architecture"],obj) for obj in user_entries)
 
 def replace_with_user_entries(e):
 	try:
-		x = user_entries[e["Package"]]
-		if x["Architecture"] == e["Architecture"]:
-			return x
+		x = user_entries[e["Package"]+":"+e["Architecture"]]
+		return x
 	except KeyError as err:
 		pass
 	return e
