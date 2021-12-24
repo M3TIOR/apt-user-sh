@@ -19,6 +19,20 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
+# @brief - Prints the locations LD_LIBRARY_PATH looks for by default.
+# @description - Parses the internals of /etc/ld.so.cache and reduces the
+#     paths to those which all the cached libraries are found within.
+#
+# NOTE: This may not be the best generative solution; it might be better to
+#       parse /etc/ld.so.conf and reduce to paths that exits from that.
+#       I guess I won't find out until someone files a bug report.
+get_ld_library_paths() {
+	# In Ubuntu at least, needs GNU findutils, binutils, and coreutils. :\
+	# Every other solution uses more niche commands or takes absolutely forever
+	# to run. SORRY THIS ISN'T AS PORTABLE AS I'D LIKE IT TO BE (;n;)
+	strings /etc/ld.so.cache | xargs dirname | sort -u;
+}
+
 # @brief - Emulates a chroot executable search without sandboxing.
 # @usage - pseudochroot [-i] [-a FILE] [-t] NEWROOT PROGRAM [ARGS...]
 # @param [-i] - Instead of replacing the PATH, it's appended to.
@@ -72,9 +86,9 @@ pseudochroot()
 	if test -n "$EMULATE_TYPE"; then
 		# If were' in emulate type mode, we just ensure the program exists in the
 		# result PATH.
-		PATH="$PATH" type "$PROGRAM" && return $?;
+		PATH="$PATH" command -V "$PROGRAM" && return $?;
 	else
-		if ! PATH="$PATH" type "$PROGRAM"; then
+		if ! PATH="$PATH" command -v "$PROGRAM" >/dev/null; then
 			error "Couldn't find command '$PROGRAM' within chroot";
 			return 1;
 		fi;
@@ -158,23 +172,24 @@ sanitize_pattern_escapes()
 
 bindargs()
 {
-	CHROOT="${XDG_DATA_HOME:-$HOME/.local/share}/apt-user/root";
+	APPDATA="${XDG_DATA_HOME:-$HOME/.local/share}/apt-user";
+	MOUNT="$APPDATA/mnt";
+	CHROOT="$APPDATA/root";
 
 	# Only bind paths which binaries depend on; configuration paths
 	# should be handled by root, though additional bind parameters may be
 	# passed by the user through BINDS
-	printf "%s\n" "-b $CHROOT/bin:/bin";
-	printf "%s\n" "-b $CHROOT/lib:/lib";
-	printf "%s\n" "-b $CHROOT/usr:/usr";
+	printf "%s\n" "-b $MOUNT/bin:/bin";
+	printf "%s\n" "-b $MOUNT/usr:/usr";
 
 	# NOTE: it's hard to know whether these libary folders are stable
 	#       between architectures; I don't think they are, based on my experience
 	#       with cross compilation and quemu so that's something to remember
 	#       for future bugs including either cross compilation or different host
 	#       architectures besides x86_64 systems like the one I'm building on.
-	printf "%s\n" "-b $CHROOT/lib32:/lib32";
-	printf "%s\n" "-b $CHROOT/lib64:/lib64";
-	printf "%s\n" "-b $CHROOT/libx32:/libx32";
+	for libfolder in "$MOUNT"/lib*; do
+		printf "%s\n" "-b $libfolder:/$(basename $libfolder)";
+	done;
 
 	for bind in $(IFS=";"; echo "$BINDS"); do
 		printf "%s\n" "-b $bind";
@@ -183,12 +198,12 @@ bindargs()
 
 this()
 {
-	SELF="$(readlink -n "$0")";
+	SELF="$(realpath -s "$0")";
 	APPDATA="${XDG_DATA_HOME:-$HOME/.local/share}/apt-user";
-	CHROOT="$APPDATA/root";
+	MOUNT="$APPDATA/mnt";
 	BINDIR="$APPDATA/bin";
 
-	printf "%s\n" "$CHROOT/${SELF#$(sanitize_pattern_escapes "$BINDIR")}";
+	printf "%s\n" "$MOUNT/${SELF#$(sanitize_pattern_escapes "$BINDIR")}";
 }
 
 # We want this to be inclusive because the root may have installed our
@@ -201,4 +216,4 @@ alias proot="pseudochroot -i ${XDG_DATA_HOME:-$HOME/.local/share}/apt-user/root 
 # of unnecessary overhead.
 set -a; eval "$(set)" 2>/dev/null; set +a;
 
-proot $(bindargs) "$(this)" $*;
+exec proot $(bindargs) "$(this)" $*;
