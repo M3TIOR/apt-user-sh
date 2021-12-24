@@ -264,9 +264,9 @@ pseudochroot()
 	if test -n "$EMULATE_TYPE"; then
 		# If were' in emulate type mode, we just ensure the program exists in the
 		# result PATH.
-		PATH="$PATH" type "$PROGRAM" && return $?;
+		PATH="$PATH" command -v "$PROGRAM" && return $?;
 	else
-		if ! PATH="$PATH" type "$PROGRAM"; then
+		if ! PATH="$PATH" command -v "$PROGRAM" >/dev/null; then
 			error "Couldn't find command '$PROGRAM' within chroot";
 			return 1;
 		fi;
