@@ -1,23 +1,13 @@
 #!/bin/sh
-# Copyright 2020 Ruby Allison Rose (aka. M3TIOR)
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
+# @file - shim.sh
+# @brief - Provides access to isolated apt-user installed binaries.
+# @copyright - (C) 2021  Ruby Allison Rose
+# SPDX-License-Identifier: GPL-3.0-only
+
+### Linter Directives ###
+# shellcheck shell=sh
+
+################################################################################
 
 # @brief - Prints the locations LD_LIBRARY_PATH looks for by default.
 # @description - Parses the internals of /etc/ld.so.cache and reduces the
@@ -211,8 +201,8 @@ this()
 alias proot="pseudochroot -i ${XDG_DATA_HOME:-$HOME/.local/share}/apt-user/root proot";
 
 # This exports all environment variables in the scope of the shim, effectively
-# passing through any variables handed over individually. It's kinda hacky,
-# unfortunately this also re-sets every shell function as well which is a lot
+# passing through any variables handed over individually. It's kinda hacky.
+# Unfortunately this also re-sets every shell function as well which is a lot
 # of unnecessary overhead.
 set -a; eval "$(set)" 2>/dev/null; set +a;
 

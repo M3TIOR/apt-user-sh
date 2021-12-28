@@ -1,28 +1,13 @@
 #!/bin/sh
-# @file - notify-send.sh
-# @brief - drop-in replacement for notify-send with more features
+# @file - apt-user.sh
+# @brief - An APT suite supplement to provide multi-user environment support.
+# @copyright (C) 2021  Ruby Allison Rose
+# SPDX-License-Identifier: GPL-3.0-only
+
+### Linter Directives ###
+# shellcheck shell=sh
+
 # NOTE: Needs `chmod u+x` to function properly.
-# NOTE; This script is not intended to be sourced.
-###############################################################################
-# Copyright 2020 Ruby Allison Rose (aka. M3TIOR)
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
 
 ################################################################################
 ## Globals
@@ -283,7 +268,7 @@ update_held_packages() {
 			true;
 		fi;
 	} \
-	| xargs apt_mark hold >&2;
+	| xargs apt_mark hold man-db libc-bin >&2;
 }
 
 packages_are()
@@ -341,6 +326,11 @@ update_shims() {
 
 print_help(){
 	echo "Usage: apt-user [-hV] [-v [NUM]] [-U] APT_COMMAND [APTARGS...]";
+	echo;
+	echo "Copyright: (C) 2021  Ruby Allison Rose";
+	echo "This program comes with ABSOLUTELY NO WARRANTY! This is free software,";
+	echo "and you are welcome to redistribute it under certain conditions.";
+	echo "For more information see https://spdx.org/licenses/GPL-3.0-only.html";
 	echo;
 	echo "Description:";
 	echo "\t'apt-local' is a script that provides APT features in a multi-user environment";
@@ -691,9 +681,8 @@ case "$COMMAND" in
 		fi;
 	;;
 	'enable')
-		# TODO: print all logged info to stderr, shove PATH to STDOUT
+		. "$PROCDIR/apt-user.shared.d/generate-prerequisites.sh";
 
-		# TODO: test if unionfs-fuse is started before instantiating a new one.
 		read PID < "$APPDATA/fuse.pid";
 		if ! test -e "/proc/$PID/status" && ! is_unionfs_mounted; then
 			info "Starting UnionFS FUSE";
