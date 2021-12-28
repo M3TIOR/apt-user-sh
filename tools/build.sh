@@ -1,19 +1,11 @@
-#!/bin/sh -x
-###############################################################################
-# Copyright (C) 2015-2021 notify-send.sh authors (see AUTHORS file)
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#!/bin/sh
+# @file - build.sh
+# @brief - Shared functions for the apt-user.sh suite.
+# @copyright - (C) 2021  Ruby Allison Rose
+# SPDX-License-Identifier: MIT
+
+### Linter Directives ###
+# shellcheck shell=sh
 
 ################################################################################
 ## Globals (Comprehensive)
@@ -241,6 +233,12 @@ while test "$#" -gt 0; do
 	case "$1" in
 		-h|--help)
 			echo 'Usage: build.sh [-hum] [-r [VERSION]] [-t "FORMAT:DISTRO[:VERSION]" [-t ...]]';
+			echo;
+			echo "Copyright: (C) 2021  Ruby Allison Rose";
+			echo "This program comes with ABSOLUTELY NO WARRANTY! This is free software,";
+			echo "and you are welcome to redistribute it under certain conditions.";
+			echo "For more information see https://spdx.org/licenses/MIT.html";
+			echo;
 			echo 'Description:';
 			echo '\tBuild automation for notify-send-sh. By default builds all';
 			echo '\tpackages for all distros. When a single option is specified,';

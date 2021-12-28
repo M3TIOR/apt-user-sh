@@ -18,7 +18,7 @@
 			],
 			"prerm": [
 				"#!/bin/sh",
-				"update-alternatives apt-user /usr/share/apt-user-sh/apt-user.sh;"
+				"update-alternatives --remove apt-user /usr/share/apt-user-sh/apt-user.sh;"
 			],
 			"postrm": null,
 			"version": [
